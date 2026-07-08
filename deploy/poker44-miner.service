@@ -1,0 +1,16 @@
+[Unit]
+Description=Poker44 SN126 Bittensor Miner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/root/workspaces/projects/poker44
+EnvironmentFile=/root/workspaces/projects/poker44/.env
+ExecStart=/usr/local/bin/poker44-miner start
+ExecStop=/usr/local/bin/poker44-miner stop
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,82 @@
+"""Poker44 miner using a hybrid LightGBM + Isolation Forest detector."""
+
+import os
+import time
+from pathlib import Path
+from typing import Tuple
+
+import bittensor as bt
+
+from deploy.hybrid_detector import HybridDetector
+from deploy.manifest_helpers import build_hybrid_model_manifest, manifest_startup_report
+from poker44.base.miner import BaseMinerNeuron
+from poker44.utils.model_manifest import manifest_digest
+from poker44.validator.synapse import DetectionSynapse
+
+
+class Miner(BaseMinerNeuron):
+    def __init__(self, config=None):
+        super().__init__(config=config)
+        repo_root = Path(__file__).resolve().parents[1]
+        model_path = Path(
+            os.getenv("POKER44_MODEL_PATH", repo_root / "models" / "hybrid.joblib")
+        )
+        self.detector = HybridDetector(model_path)
+        bt.logging.info(f"Loaded hybrid model from {model_path}")
+
+        artifact_version = str(
+            self.detector.metadata.get("model_version")
+            or os.getenv("POKER44_MODEL_VERSION", "1")
+        )
+        self.model_manifest = build_hybrid_model_manifest(
+            repo_root=repo_root,
+            model_version=artifact_version,
+        )
+        self.manifest_compliance = manifest_startup_report(self.model_manifest)
+        self.manifest_digest = manifest_digest(self.model_manifest)
+        self._log_manifest_startup(repo_root)
+
+    def _log_manifest_startup(self, repo_root: Path) -> None:
+        bt.logging.info(
+            f"Miner transparency status: {self.manifest_compliance['status']} "
+            f"(missing_fields={self.manifest_compliance['missing_fields']}, "
+            f"policy_violations={self.manifest_compliance['policy_violations']})"
+        )
+        if self.manifest_compliance["status"] != "transparent":
+            bt.logging.warning(
+                "Manifest is not transparent. Set POKER44_MODEL_REPO_URL to your public "
+                "model repository and POKER44_MODEL_REPO_COMMIT to a verifiable git SHA."
+            )
+        bt.logging.info(
+            f"Manifest summary | model={self.model_manifest.get('model_name', '')} "
+            f"version={self.model_manifest.get('model_version', '')} "
+            f"repo={self.model_manifest.get('repo_url', '')} "
+            f"commit={self.model_manifest.get('repo_commit', '')}"
+        )
+        bt.logging.info(f"Manifest digest={self.manifest_digest}")
+        bt.logging.info(f"Miner docs: {repo_root / 'docs' / 'miner.md'}")
+
+    async def forward(self, synapse: DetectionSynapse) -> DetectionSynapse:
+        chunks = synapse.chunks or []
+        scores = self.detector.score_chunks(chunks)
+        synapse.risk_scores = scores
+        synapse.predictions = [score >= 0.5 for score in scores]
+        synapse.model_manifest = dict(self.model_manifest)
+        bt.logging.info(f"Scored {len(chunks)} chunks with hybrid model.")
+        return synapse
+
+    async def blacklist(self, synapse: DetectionSynapse) -> Tuple[bool, str]:
+        return self.common_blacklist(synapse)
+
+    async def priority(self, synapse: DetectionSynapse) -> float:
+        return self.caller_priority(synapse)
+
+
+if __name__ == "__main__":
+    with Miner() as miner:
+        bt.logging.info("Poker44 hybrid miner running...")
+        while True:
+            bt.logging.info(
+                f"Miner UID: {miner.uid} | Incentive: {miner.metagraph.I[miner.uid]}"
+            )
+            time.sleep(5 * 60)

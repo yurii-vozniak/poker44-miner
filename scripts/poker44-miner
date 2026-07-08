@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MINER_DIR="/root/workspaces/projects/poker44"
+cd "${MINER_DIR}"
+
+if [ -f "${MINER_DIR}/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${MINER_DIR}/.env"
+  set +a
+fi
+
+NETUID="${NETUID:-126}"
+WALLET_NAME="${WALLET_NAME:-yaroslav-coldkey}"
+HOTKEY="${HOTKEY:-yaroslav-poker44-hotkey}"
+WALLET_PATH="${WALLET_PATH:-/root/.bittensor/wallets}"
+NETWORK="${NETWORK:-finney}"
+PM2_NAME="${PM2_NAME:-poker44_miner}"
+BTCLI="${BTCLI:-/root/bittensor-venv/bin/btcli}"
+DEFAULT_MODEL_PATH="${POKER44_MODEL_PATH:-./models/hybrid.joblib}"
+
+_activate_venv() {
+  if [ ! -d "${MINER_DIR}/miner_env" ]; then
+    echo "[ERROR] miner_env not found. Run: cd ${MINER_DIR} && ./scripts/miner/setup.sh" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC1091
+  source "${MINER_DIR}/miner_env/bin/activate"
+  export PYTHONPATH="${MINER_DIR}"
+}
+
+case "${1:-status}" in
+  start)
+    bash "${MINER_DIR}/scripts/miner/run/run_baseline_miner.sh"
+    ;;
+  stop)
+    pm2 stop "${PM2_NAME}" 2>/dev/null || true
+    pm2 delete "${PM2_NAME}" 2>/dev/null || true
+    ;;
+  restart)
+    "$0" stop
+    "$0" start
+    ;;
+  logs)
+    pm2 logs "${PM2_NAME}" --lines 100
+    ;;
+  status)
+    pm2 list 2>/dev/null || echo "PM2 not running"
+    echo ""
+    "${BTCLI}" wallet overview \
+      --wallet-name "${WALLET_NAME}" \
+      --wallet-hotkey "${HOTKEY}" \
+      --wallet-path "${WALLET_PATH}" \
+      --network "${NETWORK}" 2>/dev/null || true
+    echo ""
+    if [ -f "${DEFAULT_MODEL_PATH}" ]; then
+      echo "Model: ${DEFAULT_MODEL_PATH} (present)"
+    else
+      echo "Model: missing — run: poker44-miner train-hybrid"
+    fi
+    ;;
+  download-benchmark)
+    _activate_venv
+    python "${MINER_DIR}/deploy/download_benchmark.py" "${@:2}"
+    ;;
+  train)
+    _activate_venv
+    python "${MINER_DIR}/deploy/train_baseline.py" "${@:2}"
+    ;;
+  train-hybrid)
+    _activate_venv
+    python "${MINER_DIR}/deploy/train_hybrid.py" "${@:2}"
+    ;;
+  validate)
+    _activate_venv
+    test -f "${DEFAULT_MODEL_PATH}" || {
+      echo "[ERROR] Model missing at ${DEFAULT_MODEL_PATH}" >&2
+      exit 1
+    }
+    if [[ "${DEFAULT_MODEL_PATH}" == *hybrid* ]]; then
+      python -c "from deploy.hybrid_detector import HybridDetector; HybridDetector('${DEFAULT_MODEL_PATH}')"
+    else
+      python -c "from deploy.baseline_detector import BaselineDetector; BaselineDetector('${DEFAULT_MODEL_PATH}')"
+    fi
+    echo "Model artifact loads successfully."
+    ;;
+  manifest-check)
+    _activate_venv
+    python - <<'PY'
+from pathlib import Path
+
+from deploy.manifest_helpers import build_hybrid_model_manifest, manifest_startup_report
+
+repo_root = Path(".").resolve()
+manifest = build_hybrid_model_manifest(repo_root=repo_root)
+report = manifest_startup_report(manifest)
+print("status:", report["status"])
+print("missing_fields:", report["missing_fields"])
+print("policy_violations:", report["policy_violations"])
+print("repo_url:", manifest.get("repo_url"))
+print("repo_commit:", manifest.get("repo_commit"))
+print("implementation_files:", manifest.get("implementation_files"))
+PY
+    ;;
+  register-info)
+    echo "Register on SN126 (requires TAO):"
+    echo "  ${BTCLI} subnet register --netuid ${NETUID} \\"
+    echo "    --wallet-name ${WALLET_NAME} --wallet-hotkey ${HOTKEY} \\"
+    echo "    --wallet-path ${WALLET_PATH} --network ${NETWORK}"
+    ;;
+  *)
+    echo "Usage: $0 {start|stop|restart|logs|status|download-benchmark|train|train-hybrid|validate|manifest-check|register-info}"
+    exit 1
+    ;;
+esac
