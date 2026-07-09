@@ -25,7 +25,8 @@ from deploy.benchmark_dataset import (
     summarize_examples,
 )
 from deploy.eval_metrics import evaluate_scores
-from deploy.features import FEATURE_NAMES
+from deploy.features import FEATURE_NAMES, _heuristic_score
+from deploy.iso_calibration import fit_iso_calibration, iso_bot_probability
 
 
 def _maybe_invert_scores(y_true: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, bool]:
@@ -36,16 +37,15 @@ def _maybe_invert_scores(y_true: np.ndarray, scores: np.ndarray) -> tuple[np.nda
     return 1.0 - scores, True
 
 
-def _anomaly_scores(
-    iso_forest: IsolationForest,
-    features: np.ndarray,
-    *,
-    iso_min: float,
-    iso_max: float,
-) -> np.ndarray:
-    raw = -iso_forest.score_samples(features)
-    span = max(iso_max - iso_min, 1e-8)
-    return np.clip((raw - iso_min) / span, 0.0, 1.0)
+def _hand_boost_scores(examples) -> np.ndarray:
+    boosts = []
+    for example in examples:
+        if not example.chunk:
+            boosts.append(0.0)
+            continue
+        scores = [_heuristic_score(hand) for hand in example.chunk]
+        boosts.append(float(np.percentile(scores, 75)))
+    return np.asarray(boosts, dtype=np.float64)
 
 
 def _fuse_scores(
@@ -54,52 +54,86 @@ def _fuse_scores(
     *,
     fusion_mode: str,
     iso_blend_weight: float,
+    hand_boost: np.ndarray | None = None,
+    hand_boost_weight: float = 0.0,
 ) -> np.ndarray:
-    if fusion_mode == "max":
-        return np.maximum(supervised, anomaly)
     if fusion_mode == "blend":
-        return np.clip(supervised + iso_blend_weight * anomaly * (1.0 - supervised), 0.0, 1.0)
-    return supervised
+        fused = supervised + iso_blend_weight * anomaly * (1.0 - supervised)
+    elif fusion_mode == "supervised":
+        fused = supervised
+    else:
+        fused = np.maximum(supervised, anomaly)
+    if hand_boost is not None and hand_boost_weight > 0:
+        fused = np.clip(fused + hand_boost_weight * hand_boost * (1.0 - fused), 0.0, 1.0)
+    return fused
 
 
 def _select_fusion(
     supervised: np.ndarray,
     anomaly: np.ndarray,
     y_true: np.ndarray,
-) -> tuple[str, float, dict]:
-    candidates: list[tuple[str, float, np.ndarray]] = []
-    candidates.append(("supervised", 0.0, supervised.copy()))
-    for weight in (0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40):
+    hand_boost: np.ndarray,
+) -> tuple[str, float, float, dict]:
+    candidates: list[tuple[str, float, float, np.ndarray]] = []
+    candidates.append(("supervised", 0.0, 0.0, supervised.copy()))
+    candidates.append(("max", 0.0, 0.0, np.maximum(supervised, anomaly)))
+    for weight in (0.05, 0.10, 0.15, 0.20, 0.25):
         candidates.append(
             (
                 "blend",
                 weight,
-                _fuse_scores(supervised, anomaly, fusion_mode="blend", iso_blend_weight=weight),
+                0.0,
+                _fuse_scores(
+                    supervised,
+                    anomaly,
+                    fusion_mode="blend",
+                    iso_blend_weight=weight,
+                ),
             )
         )
-    candidates.append(("max", 0.0, _fuse_scores(supervised, anomaly, fusion_mode="max", iso_blend_weight=0.0)))
+    for boost_weight in (0.0, 0.08, 0.12, 0.16):
+        for mode, blend_weight, _, base_scores in list(candidates):
+            if mode == "blend" and blend_weight not in {0.0, 0.10}:
+                continue
+            if mode == "supervised" and boost_weight == 0.0:
+                continue
+            candidates.append(
+                (
+                    mode,
+                    blend_weight,
+                    boost_weight,
+                    _fuse_scores(
+                        supervised,
+                        anomaly,
+                        fusion_mode=mode,
+                        iso_blend_weight=blend_weight,
+                        hand_boost=hand_boost,
+                        hand_boost_weight=boost_weight,
+                    ),
+                )
+            )
 
-    best_mode = "supervised"
-    best_weight = 0.0
+    best_mode = "max"
+    best_blend = 0.0
+    best_boost = 0.12
     best_metrics: dict = {}
     best_reward = -1.0
-    best_scores = supervised
 
-    for mode, weight, scores in candidates:
+    for mode, blend_weight, boost_weight, scores in candidates:
         metrics = evaluate_scores(scores, y_true)
         reward = float(metrics.get("reward") or -1.0)
         if reward > best_reward:
             best_reward = reward
             best_mode = mode
-            best_weight = weight
+            best_blend = blend_weight
+            best_boost = boost_weight
             best_metrics = metrics
-            best_scores = scores
 
-    return best_mode, best_weight, {
+    return best_mode, best_blend, best_boost, {
         "fusion_mode": best_mode,
-        "iso_blend_weight": best_weight,
+        "iso_blend_weight": best_blend,
+        "hand_boost_weight": best_boost,
         "metrics": best_metrics,
-        "scores": best_scores,
     }
 
 
@@ -108,6 +142,7 @@ def _fit_hybrid(
     y_train: np.ndarray,
     x_val: np.ndarray,
     y_val: np.ndarray,
+    val_examples,
 ) -> tuple[StandardScaler, lgb.LGBMClassifier, IsolationForest, IsotonicRegression | None, dict]:
     scaler = StandardScaler()
     x_train_scaled = scaler.fit_transform(x_train)
@@ -117,14 +152,14 @@ def _fit_hybrid(
 
     positive_rate = float(np.mean(y_train)) if y_train.size else 0.1
     lgbm = lgb.LGBMClassifier(
-        n_estimators=800,
+        n_estimators=900,
         learning_rate=0.02,
         num_leaves=63,
-        min_child_samples=15,
+        min_child_samples=12,
         subsample=0.85,
-        colsample_bytree=0.85,
-        reg_alpha=0.15,
-        reg_lambda=0.15,
+        colsample_bytree=0.8,
+        reg_alpha=0.2,
+        reg_lambda=0.2,
         class_weight="balanced",
         random_state=42,
         verbose=-1,
@@ -134,7 +169,7 @@ def _fit_hybrid(
         y_train,
         eval_set=[(x_val_frame, y_val)],
         eval_metric="average_precision",
-        callbacks=[lgb.early_stopping(stopping_rounds=60, verbose=False)],
+        callbacks=[lgb.early_stopping(stopping_rounds=80, verbose=False)],
     )
 
     train_probs = lgbm.predict_proba(x_train_frame)[:, 1]
@@ -147,13 +182,13 @@ def _fit_hybrid(
         sample_weight=sample_weights,
         eval_set=[(x_val_frame, y_val)],
         eval_metric="average_precision",
-        callbacks=[lgb.early_stopping(stopping_rounds=60, verbose=False)],
+        callbacks=[lgb.early_stopping(stopping_rounds=80, verbose=False)],
     )
 
     human_mask = y_train == 0
     iso_train = x_train_scaled[human_mask] if np.any(human_mask) else x_train_scaled
     iso_forest = IsolationForest(
-        n_estimators=300,
+        n_estimators=400,
         contamination=min(max(positive_rate, 0.01), 0.49),
         random_state=42,
     )
@@ -168,20 +203,22 @@ def _fit_hybrid(
         calibrator.fit(supervised_val, y_val)
         supervised_val = np.clip(calibrator.predict(supervised_val), 0.0, 1.0)
 
-    raw_iso_train = -iso_forest.score_samples(x_train_scaled)
-    iso_min = float(np.min(raw_iso_train))
-    iso_max = float(np.max(raw_iso_train))
-    anomaly_val = _anomaly_scores(iso_forest, x_val_scaled, iso_min=iso_min, iso_max=iso_max)
-
-    fusion_mode, iso_blend_weight, fusion = _select_fusion(supervised_val, anomaly_val, y_val)
-    final_scores = fusion["scores"]
+    iso_calibration = fit_iso_calibration(iso_forest, iso_train)
+    anomaly_val = iso_bot_probability(iso_forest.score_samples(x_val_scaled), iso_calibration)
+    hand_boost = _hand_boost_scores(val_examples)
+    fusion_mode, iso_blend_weight, hand_boost_weight, fusion = _select_fusion(
+        supervised_val,
+        anomaly_val,
+        y_val,
+        hand_boost,
+    )
 
     calibration = {
         "invert_scores": invert_scores,
-        "iso_min": iso_min,
-        "iso_max": iso_max,
+        "iso_calibration": iso_calibration.to_dict(),
         "fusion_mode": fusion_mode,
         "iso_blend_weight": iso_blend_weight,
+        "hand_boost_weight": hand_boost_weight,
         "validation": {
             "supervised": evaluate_scores(supervised_val, y_val),
             "iso": evaluate_scores(anomaly_val, y_val),
@@ -208,77 +245,39 @@ def _score_examples(
         supervised = 1.0 - supervised
     if calibrator is not None:
         supervised = np.clip(calibrator.predict(supervised), 0.0, 1.0)
-    if calibration["fusion_mode"] == "supervised":
+    if calibration["fusion_mode"] == "supervised" and calibration["hand_boost_weight"] <= 0:
         return supervised
-    anomaly = _anomaly_scores(
-        iso_forest,
-        scaled,
-        iso_min=float(calibration["iso_min"]),
-        iso_max=float(calibration["iso_max"]),
-    )
+    from deploy.iso_calibration import IsoCalibration
+
+    iso_cal = IsoCalibration.from_dict(calibration["iso_calibration"])
+    anomaly = iso_bot_probability(iso_forest.score_samples(scaled), iso_cal)
+    hand_boost = _hand_boost_scores(examples)
     return _fuse_scores(
         supervised,
         anomaly,
         fusion_mode=str(calibration["fusion_mode"]),
         iso_blend_weight=float(calibration["iso_blend_weight"]),
+        hand_boost=hand_boost,
+        hand_boost_weight=float(calibration["hand_boost_weight"]),
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=Path("models/hybrid.joblib"),
-        help="Path to write the trained hybrid model artifact.",
-    )
-    parser.add_argument(
-        "--cache-dir",
-        type=Path,
-        default=Path("data/benchmark"),
-        help="Directory for cached benchmark chunk records.",
-    )
-    parser.add_argument(
-        "--dates",
-        type=int,
-        default=90,
-        help="Number of most recent release dates to use.",
-    )
-    parser.add_argument(
-        "--source-dates",
-        nargs="*",
-        default=None,
-        help="Explicit source dates (YYYY-MM-DD). Overrides --dates.",
-    )
-    parser.add_argument(
-        "--holdout-dates",
-        type=int,
-        default=2,
-        help="Hold out the most recent N release dates for validation.",
-    )
-    parser.add_argument(
-        "--max-chunks-per-date",
-        type=int,
-        default=None,
-        help="Optional cap on chunk records downloaded per release date.",
-    )
-    parser.add_argument(
-        "--refresh-cache",
-        action="store_true",
-        help="Re-download benchmark records even when cache files exist.",
-    )
+    parser.add_argument("--output", type=Path, default=Path("models/hybrid.joblib"))
+    parser.add_argument("--cache-dir", type=Path, default=Path("data/benchmark"))
+    parser.add_argument("--dates", type=int, default=90)
+    parser.add_argument("--source-dates", nargs="*", default=None)
+    parser.add_argument("--holdout-dates", type=int, default=2)
+    parser.add_argument("--max-chunks-per-date", type=int, default=None)
+    parser.add_argument("--refresh-cache", action="store_true")
     args = parser.parse_args()
 
     client = BenchmarkClient()
-    if args.source_dates:
-        source_dates = list(args.source_dates)
-    else:
-        source_dates = client.list_source_dates()[: args.dates]
-
+    source_dates = list(args.source_dates or client.list_source_dates()[: args.dates])
     if len(source_dates) <= args.holdout_dates:
         raise RuntimeError(
-            f"Need more than {args.holdout_dates} source dates for holdout validation; "
-            f"got {len(source_dates)}."
+            f"Need more than {args.holdout_dates} source dates; got {len(source_dates)}."
         )
 
     print(f"Using source dates: {', '.join(source_dates)}")
@@ -294,13 +293,11 @@ def main() -> None:
         examples,
         holdout_dates=args.holdout_dates,
     )
-
     if not train_examples or not val_examples:
         raise RuntimeError("Train/validation split produced empty partitions.")
 
     x_train, y_train, train_meta = examples_to_arrays(train_examples)
     x_val, y_val, val_meta = examples_to_arrays(val_examples)
-
     print("Train summary:", json.dumps(summarize_examples(train_examples), indent=2))
     print("Validation summary:", json.dumps(summarize_examples(val_examples), indent=2))
 
@@ -309,6 +306,7 @@ def main() -> None:
         y_train,
         x_val,
         y_val,
+        val_examples,
     )
 
     per_date_metrics: dict[str, dict] = {}
@@ -329,9 +327,10 @@ def main() -> None:
     metadata = {
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "model_name": "poker44-hybrid-lgbm-iso",
-        "model_version": "3",
+        "model_version": "4",
         "framework": "lightgbm+sklearn",
         "feature_names": FEATURE_NAMES,
+        "feature_count": len(FEATURE_NAMES),
         "source_dates": source_dates,
         "holdout_dates": args.holdout_dates,
         "train": summarize_examples(train_examples),
@@ -347,14 +346,13 @@ def main() -> None:
         "iso_forest": iso_forest,
         "calibrator": calibrator,
         "invert_scores": calibration["invert_scores"],
-        "iso_min": calibration["iso_min"],
-        "iso_max": calibration["iso_max"],
+        "iso_calibration": calibration["iso_calibration"],
         "fusion_mode": calibration["fusion_mode"],
         "iso_blend_weight": calibration["iso_blend_weight"],
+        "hand_boost_weight": calibration["hand_boost_weight"],
         "metadata": metadata,
     }
     joblib.dump(artifact, args.output)
-
     summary_path = args.output.with_suffix(".json")
     summary_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     print(f"Saved model to {args.output}")

@@ -45,6 +45,7 @@ def hybrid_implementation_files(repo_root: Path) -> list[Path]:
         repo_root / "neurons" / "miner_hybrid.py",
         repo_root / "deploy" / "hybrid_detector.py",
         repo_root / "deploy" / "features.py",
+        repo_root / "deploy" / "iso_calibration.py",
         repo_root / "deploy" / "manifest_helpers.py",
     ]
 
