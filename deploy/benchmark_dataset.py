@@ -90,7 +90,7 @@ def iter_training_examples(records_by_date: dict[str, list[dict[str, Any]]]) -> 
             for chunk_group, label in zip(model_inputs, ground_truth):
                 if not chunk_group:
                     continue
-                feature_row = chunks_to_matrix([chunk_group])[0]
+                feature_row = chunks_to_matrix([chunk_group], for_training=True)[0]
                 yield TrainingExample(
                     source_date=source_date,
                     chunk_id=str(record.get("chunkId") or ""),
