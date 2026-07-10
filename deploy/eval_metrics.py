@@ -19,6 +19,32 @@ def recall_at_fpr(
     return float(metrics["bot_recall"]), float(metrics["fpr"])
 
 
+def windowed_reward(
+    y_score: np.ndarray,
+    y_true: np.ndarray,
+    *,
+    window_size: int = 100,
+    n_trials: int = 8,
+    seed: int = 42,
+) -> float | None:
+    """Average validator-style reward over random fixed-size windows."""
+    scores = np.asarray(y_score, dtype=float)
+    labels = np.asarray(y_true, dtype=int)
+    if labels.size == 0 or len(set(labels.tolist())) < 2:
+        return None
+    if labels.size <= window_size:
+        _, metrics = reward(scores, labels)
+        return float(metrics["reward"])
+
+    rng = np.random.default_rng(seed)
+    rewards: list[float] = []
+    for _ in range(n_trials):
+        idx = rng.choice(labels.size, size=window_size, replace=False)
+        _, metrics = reward(scores[idx], labels[idx])
+        rewards.append(float(metrics["reward"]))
+    return float(np.mean(rewards))
+
+
 def evaluate_scores(
     y_score: np.ndarray,
     y_true: np.ndarray,

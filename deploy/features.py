@@ -265,6 +265,13 @@ def _chunk_consistency_features(chunk: list[dict]) -> dict[str, float]:
     return feats
 
 
+def hand_features(hand: dict, *, for_training: bool = False) -> np.ndarray:
+    """Return the per-hand feature vector used by the hand-level scorer."""
+    visible = prepare_hand_for_miner(hand) if for_training else hand
+    feats = _hand_feature_dict(visible)
+    return np.asarray([feats[key] for key in HAND_KEYS], dtype=np.float32)
+
+
 def canonicalize_chunk(chunk: list[dict], *, for_training: bool) -> list[dict]:
     if not for_training:
         return chunk
