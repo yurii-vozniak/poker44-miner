@@ -61,6 +61,12 @@ cat > "${LAUNCHER}" <<EOF
 #!/bin/bash
 set -euo pipefail
 cd "${PROJECT_DIR}"
+if [ -f "${PROJECT_DIR}/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "${PROJECT_DIR}/.env"
+  set +a
+fi
 source miner_env/bin/activate
 export PYTHONPATH="${PROJECT_DIR}"
 export BT_NO_PARSE_CLI_ARGS=0

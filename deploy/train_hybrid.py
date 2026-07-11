@@ -235,7 +235,21 @@ def _selection_reward(
             np.average(per_date_rewards, weights=np.asarray(per_date_weights, dtype=np.float64))
         )
 
-    return 0.65 * flat_reward + 0.25 * window_reward + 0.10 * recency_reward
+    latest_date = max(example.source_date for example in val_examples)
+    latest_indices = [
+        index for index, example in enumerate(val_examples) if example.source_date == latest_date
+    ]
+    latest_recall = 0.0
+    if latest_indices:
+        latest_metrics = evaluate_scores(scores[latest_indices], y_true[latest_indices])
+        latest_recall = float(latest_metrics.get("bot_recall_at_fpr") or 0.0)
+
+    return (
+        0.50 * flat_reward
+        + 0.20 * window_reward
+        + 0.15 * recency_reward
+        + 0.15 * latest_recall
+    )
 
 
 def _select_fusion(
@@ -603,7 +617,7 @@ def main() -> None:
     metadata = {
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "model_name": "poker44-hybrid-lgbm-iso",
-        "model_version": "5",
+        "model_version": "6",
         "framework": "lightgbm+sklearn",
         "feature_names": FEATURE_NAMES,
         "feature_count": len(FEATURE_NAMES),

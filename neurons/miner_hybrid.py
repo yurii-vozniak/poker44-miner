@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Tuple
 
 import bittensor as bt
+from dotenv import load_dotenv
 
 from deploy.hybrid_detector import HybridDetector
 from deploy.manifest_helpers import build_hybrid_model_manifest, manifest_startup_report
@@ -16,8 +17,9 @@ from poker44.validator.synapse import DetectionSynapse
 
 class Miner(BaseMinerNeuron):
     def __init__(self, config=None):
-        super().__init__(config=config)
         repo_root = Path(__file__).resolve().parents[1]
+        load_dotenv(repo_root / ".env", override=False)
+        super().__init__(config=config)
         model_path = Path(
             os.getenv("POKER44_MODEL_PATH", repo_root / "models" / "hybrid.joblib")
         )
@@ -34,6 +36,7 @@ class Miner(BaseMinerNeuron):
         )
         self.manifest_compliance = manifest_startup_report(self.model_manifest)
         self.manifest_digest = manifest_digest(self.model_manifest)
+        self._manifest_warned = False
         self._log_manifest_startup(repo_root)
 
     def _log_manifest_startup(self, repo_root: Path) -> None:
@@ -62,6 +65,15 @@ class Miner(BaseMinerNeuron):
         synapse.risk_scores = scores
         synapse.predictions = [score >= 0.5 for score in scores]
         synapse.model_manifest = dict(self.model_manifest)
+        if (
+            not self._manifest_warned
+            and self.manifest_compliance.get("status") != "transparent"
+        ):
+            self._manifest_warned = True
+            bt.logging.warning(
+                "Sending opaque manifest to validators; dashboard scores may stay at 0 "
+                f"until manifest is transparent: missing={self.manifest_compliance.get('missing_fields')}"
+            )
         bt.logging.info(f"Scored {len(chunks)} chunks with hybrid model.")
         return synapse
 
