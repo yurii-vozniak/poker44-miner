@@ -72,17 +72,17 @@ case "${1:-status}" in
     _activate_venv
     python "${MINER_DIR}/deploy/train_hybrid.py" "${@:2}"
     ;;
+  train-stacked)
+    _activate_venv
+    python "${MINER_DIR}/deploy/train_stacked.py" "${@:2}"
+    ;;
   validate)
     _activate_venv
     test -f "${DEFAULT_MODEL_PATH}" || {
       echo "[ERROR] Model missing at ${DEFAULT_MODEL_PATH}" >&2
       exit 1
     }
-    if [[ "${DEFAULT_MODEL_PATH}" == *hybrid* ]]; then
-      python -c "from deploy.hybrid_detector import HybridDetector; HybridDetector('${DEFAULT_MODEL_PATH}')"
-    else
-      python -c "from deploy.baseline_detector import BaselineDetector; BaselineDetector('${DEFAULT_MODEL_PATH}')"
-    fi
+    python -c "from deploy.chunk_detector import load_chunk_detector; load_chunk_detector('${DEFAULT_MODEL_PATH}')"
     echo "Model artifact loads successfully."
     ;;
   retrain-before-epoch)
@@ -119,7 +119,7 @@ PY
     echo "    --wallet-path ${WALLET_PATH} --network ${NETWORK}"
     ;;
   *)
-    echo "Usage: $0 {start|stop|restart|logs|status|download-benchmark|train|train-hybrid|validate|manifest-check|retrain-before-epoch|install-epoch-cron|register-info}"
+    echo "Usage: $0 {start|stop|restart|logs|status|download-benchmark|train|train-hybrid|train-stacked|validate|manifest-check|retrain-before-epoch|install-epoch-cron|register-info}"
     exit 1
     ;;
 esac

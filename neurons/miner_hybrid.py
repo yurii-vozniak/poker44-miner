@@ -8,7 +8,7 @@ from typing import Tuple
 import bittensor as bt
 from dotenv import load_dotenv
 
-from deploy.hybrid_detector import HybridDetector
+from deploy.chunk_detector import load_chunk_detector
 from deploy.manifest_helpers import build_hybrid_model_manifest, manifest_startup_report
 from poker44.base.miner import BaseMinerNeuron
 from poker44.utils.model_manifest import manifest_digest
@@ -23,17 +23,23 @@ class Miner(BaseMinerNeuron):
         model_path = Path(
             os.getenv("POKER44_MODEL_PATH", repo_root / "models" / "hybrid.joblib")
         )
-        self.detector = HybridDetector(model_path)
-        bt.logging.info(f"Loaded hybrid model from {model_path}")
+        self.detector = load_chunk_detector(model_path)
+        bt.logging.info(f"Loaded detector from {model_path}")
 
         artifact_version = str(
             self.detector.metadata.get("model_version")
             or os.getenv("POKER44_MODEL_VERSION", "1")
         )
+        artifact_name = str(
+            self.detector.metadata.get("model_name")
+            or os.getenv("POKER44_MODEL_NAME", "poker44-hybrid-lgbm-iso")
+        )
         self.model_manifest = build_hybrid_model_manifest(
             repo_root=repo_root,
             model_version=artifact_version,
         )
+        if artifact_name:
+            self.model_manifest["model_name"] = artifact_name
         self.manifest_compliance = manifest_startup_report(self.model_manifest)
         self.manifest_digest = manifest_digest(self.model_manifest)
         self._manifest_warned = False
@@ -74,8 +80,7 @@ class Miner(BaseMinerNeuron):
                 "Sending opaque manifest to validators; dashboard scores may stay at 0 "
                 f"until manifest is transparent: missing={self.manifest_compliance.get('missing_fields')}"
             )
-        bt.logging.info(
-            f"Scored {len(chunks)} chunks with hybrid model "
+        bt.logging.info(f"Scored {len(chunks)} chunks with {self.detector.metadata.get('model_name', 'detector')} model "
             f"(manifest_digest={self.manifest_digest[:12]}…, "
             f"status={self.manifest_compliance.get('status')})."
         )

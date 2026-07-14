@@ -100,7 +100,7 @@ fi
 log "Pre-epoch retrain starting for ${NEXT_EPOCH_ID} (current=${CURRENT_EPOCH_ID}, seconds_remaining=${SECONDS_REMAINING})."
 
 python deploy/download_benchmark.py --dates "${TRAIN_DATES}" --refresh
-python deploy/train_hybrid.py --dates "${TRAIN_DATES}" --holdout-dates "${HOLDOUT_DATES}"
+python deploy/train_stacked.py --dates "${TRAIN_DATES}" --holdout-dates "${HOLDOUT_DATES}"
 bash scripts/poker44-miner validate
 bash scripts/poker44-miner manifest-check
 

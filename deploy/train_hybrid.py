@@ -24,11 +24,13 @@ from deploy.benchmark_dataset import (
     split_examples_by_date,
     summarize_examples,
 )
+from deploy.batch_calibration import apply_batch_calibration
 from deploy.eval_metrics import evaluate_scores, windowed_reward
 from deploy.features import FEATURE_NAMES, HAND_KEYS, _heuristic_score, hand_features
 from deploy.iso_calibration import fit_iso_calibration, iso_bot_probability
+from poker44.score.scoring import reward
 
-DEFAULT_MODEL_VERSION = "8"
+DEFAULT_MODEL_VERSION = "9"
 SELECTION_WINDOW_SIZE = 200
 MAX_HUMAN_FPR = 0.05
 
@@ -254,6 +256,36 @@ def _passes_human_fpr_guard(
     return _max_human_fpr_by_date(scores, y_true, val_examples) <= max_fpr + 1e-9
 
 
+def _batched_window_reward(
+    scores: np.ndarray,
+    y_true: np.ndarray,
+    *,
+    batch_size: int = 100,
+    n_trials: int = 8,
+    seed: int = 42,
+) -> float | None:
+    labels = np.asarray(y_true, dtype=int)
+    values = np.asarray(scores, dtype=float)
+    if labels.size < 20 or len(set(labels.tolist())) < 2:
+        return None
+
+    rng = np.random.default_rng(seed)
+    rewards: list[float] = []
+    for _ in range(n_trials):
+        order = rng.permutation(labels.size)
+        batch_rewards: list[float] = []
+        for start in range(0, labels.size, batch_size):
+            part = order[start : start + batch_size]
+            if part.size < 20:
+                continue
+            batch_scores = apply_batch_calibration(values[part])
+            _, metrics = reward(batch_scores, labels[part])
+            batch_rewards.append(float(metrics["reward"]))
+        if batch_rewards:
+            rewards.append(float(np.mean(batch_rewards)))
+    return float(np.mean(rewards)) if rewards else None
+
+
 def _selection_reward(
     scores: np.ndarray,
     y_true: np.ndarray,
@@ -270,6 +302,9 @@ def _selection_reward(
     )
     if window_reward is None:
         window_reward = flat_reward
+    batch_reward = _batched_window_reward(scores, y_true)
+    if batch_reward is None:
+        batch_reward = flat_reward
 
     per_date_rewards = _per_date_rewards(scores, y_true, val_examples)
     mean_date_reward = flat_reward
@@ -279,10 +314,11 @@ def _selection_reward(
         min_date_reward = float(np.min(per_date_rewards))
 
     return (
-        0.35 * flat_reward
-        + 0.25 * window_reward
-        + 0.25 * mean_date_reward
-        + 0.15 * min_date_reward
+        0.30 * flat_reward
+        + 0.20 * window_reward
+        + 0.25 * batch_reward
+        + 0.15 * mean_date_reward
+        + 0.10 * min_date_reward
     )
 
 
