@@ -36,7 +36,7 @@ if [ "${latest}" = "${last}" ]; then
 fi
 
 echo "New benchmark release detected: ${latest}"
-python deploy/train_hybrid.py --dates 90 --holdout-dates 3 --refresh-cache
+python deploy/train_hybrid.py --dates 90 --holdout-dates 5 --refresh-cache
 bash scripts/poker44-miner validate
 bash scripts/poker44-miner restart
 printf '%s' "${latest}" > "${STATE_FILE}"

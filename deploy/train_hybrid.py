@@ -28,6 +28,10 @@ from deploy.eval_metrics import evaluate_scores, windowed_reward
 from deploy.features import FEATURE_NAMES, HAND_KEYS, _heuristic_score, hand_features
 from deploy.iso_calibration import fit_iso_calibration, iso_bot_probability
 
+DEFAULT_MODEL_VERSION = "8"
+SELECTION_WINDOW_SIZE = 200
+MAX_HUMAN_FPR = 0.05
+
 
 def _maybe_invert_scores(y_true: np.ndarray, scores: np.ndarray) -> tuple[np.ndarray, bool]:
     metrics = evaluate_scores(scores, y_true)
@@ -201,21 +205,13 @@ def _hand_probs_for_examples(
     return probs
 
 
-def _selection_reward(
+def _per_date_rewards(
     scores: np.ndarray,
     y_true: np.ndarray,
     val_examples,
-) -> float:
-    metrics = evaluate_scores(scores, y_true)
-    flat_reward = float(metrics.get("reward") or -1.0)
-    window_reward = windowed_reward(scores, y_true, window_size=100, n_trials=8)
-    if window_reward is None:
-        window_reward = flat_reward
-
-    per_date_rewards: list[float] = []
-    per_date_weights: list[float] = []
-    dates = sorted({example.source_date for example in val_examples})
-    for weight, source_date in enumerate(dates, start=1):
+) -> list[float]:
+    rewards: list[float] = []
+    for source_date in sorted({example.source_date for example in val_examples}):
         indices = [
             index
             for index, example in enumerate(val_examples)
@@ -223,32 +219,70 @@ def _selection_reward(
         ]
         if not indices:
             continue
-        date_scores = scores[indices]
-        date_labels = y_true[indices]
-        date_metrics = evaluate_scores(date_scores, date_labels)
-        per_date_rewards.append(float(date_metrics.get("reward") or -1.0))
-        per_date_weights.append(float(weight))
+        date_metrics = evaluate_scores(scores[indices], y_true[indices])
+        rewards.append(float(date_metrics.get("reward") or -1.0))
+    return rewards
 
-    recency_reward = flat_reward
+
+def _max_human_fpr_by_date(
+    scores: np.ndarray,
+    y_true: np.ndarray,
+    val_examples,
+) -> float:
+    """Worst per-date human FPR at the reward-optimal operating point."""
+    max_fpr = 0.0
+    for source_date in sorted({example.source_date for example in val_examples}):
+        indices = [
+            index
+            for index, example in enumerate(val_examples)
+            if example.source_date == source_date
+        ]
+        if not indices:
+            continue
+        date_metrics = evaluate_scores(scores[indices], y_true[indices])
+        max_fpr = max(max_fpr, float(date_metrics.get("fpr_at_recall") or 1.0))
+    return max_fpr
+
+
+def _passes_human_fpr_guard(
+    scores: np.ndarray,
+    y_true: np.ndarray,
+    val_examples,
+    *,
+    max_fpr: float = MAX_HUMAN_FPR,
+) -> bool:
+    return _max_human_fpr_by_date(scores, y_true, val_examples) <= max_fpr + 1e-9
+
+
+def _selection_reward(
+    scores: np.ndarray,
+    y_true: np.ndarray,
+    val_examples,
+) -> float:
+    """Stability-first objective aligned with v2.2 multi-round competition."""
+    metrics = evaluate_scores(scores, y_true)
+    flat_reward = float(metrics.get("reward") or -1.0)
+    window_reward = windowed_reward(
+        scores,
+        y_true,
+        window_size=SELECTION_WINDOW_SIZE,
+        n_trials=8,
+    )
+    if window_reward is None:
+        window_reward = flat_reward
+
+    per_date_rewards = _per_date_rewards(scores, y_true, val_examples)
+    mean_date_reward = flat_reward
+    min_date_reward = flat_reward
     if per_date_rewards:
-        recency_reward = float(
-            np.average(per_date_rewards, weights=np.asarray(per_date_weights, dtype=np.float64))
-        )
-
-    latest_date = max(example.source_date for example in val_examples)
-    latest_indices = [
-        index for index, example in enumerate(val_examples) if example.source_date == latest_date
-    ]
-    latest_recall = 0.0
-    if latest_indices:
-        latest_metrics = evaluate_scores(scores[latest_indices], y_true[latest_indices])
-        latest_recall = float(latest_metrics.get("bot_recall_at_fpr") or 0.0)
+        mean_date_reward = float(np.mean(per_date_rewards))
+        min_date_reward = float(np.min(per_date_rewards))
 
     return (
-        0.50 * flat_reward
-        + 0.20 * window_reward
-        + 0.15 * recency_reward
-        + 0.15 * latest_recall
+        0.35 * flat_reward
+        + 0.25 * window_reward
+        + 0.25 * mean_date_reward
+        + 0.15 * min_date_reward
     )
 
 
@@ -339,17 +373,26 @@ def _select_fusion(
     best_metrics: dict = {}
     best_reward = -1.0
 
-    for mode, blend_weight, boost_weight, hand_mix, aggregate_mode, scores in candidates:
-        selection_reward = _selection_reward(scores, y_true, val_examples)
-        metrics = evaluate_scores(scores, y_true)
-        if selection_reward > best_reward:
-            best_reward = selection_reward
-            best_mode = mode
-            best_blend = blend_weight
-            best_boost = boost_weight
-            best_hand_mix = hand_mix
-            best_hand_aggregate = aggregate_mode
-            best_metrics = metrics
+    def _consider_candidates(*, enforce_fpr_guard: bool) -> None:
+        nonlocal best_mode, best_blend, best_boost, best_hand_mix
+        nonlocal best_hand_aggregate, best_metrics, best_reward
+        for mode, blend_weight, boost_weight, hand_mix, aggregate_mode, scores in candidates:
+            if enforce_fpr_guard and not _passes_human_fpr_guard(scores, y_true, val_examples):
+                continue
+            selection_reward = _selection_reward(scores, y_true, val_examples)
+            metrics = evaluate_scores(scores, y_true)
+            if selection_reward > best_reward:
+                best_reward = selection_reward
+                best_mode = mode
+                best_blend = blend_weight
+                best_boost = boost_weight
+                best_hand_mix = hand_mix
+                best_hand_aggregate = aggregate_mode
+                best_metrics = metrics
+
+    _consider_candidates(enforce_fpr_guard=True)
+    if best_reward < 0.0:
+        _consider_candidates(enforce_fpr_guard=False)
 
     return best_mode, best_blend, best_boost, best_hand_mix, best_hand_aggregate, {
         "fusion_mode": best_mode,
@@ -555,7 +598,7 @@ def main() -> None:
     parser.add_argument("--cache-dir", type=Path, default=Path("data/benchmark"))
     parser.add_argument("--dates", type=int, default=90)
     parser.add_argument("--source-dates", nargs="*", default=None)
-    parser.add_argument("--holdout-dates", type=int, default=3)
+    parser.add_argument("--holdout-dates", type=int, default=5)
     parser.add_argument("--max-chunks-per-date", type=int, default=None)
     parser.add_argument("--refresh-cache", action="store_true")
     args = parser.parse_args()
@@ -617,7 +660,7 @@ def main() -> None:
     metadata = {
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "model_name": "poker44-hybrid-lgbm-iso",
-        "model_version": "6",
+        "model_version": DEFAULT_MODEL_VERSION,
         "framework": "lightgbm+sklearn",
         "feature_names": FEATURE_NAMES,
         "feature_count": len(FEATURE_NAMES),

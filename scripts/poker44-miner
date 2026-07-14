@@ -85,14 +85,23 @@ case "${1:-status}" in
     fi
     echo "Model artifact loads successfully."
     ;;
+  retrain-before-epoch)
+    bash "${MINER_DIR}/scripts/retrain_before_epoch.sh" "${@:2}"
+    ;;
+  install-epoch-cron)
+    bash "${MINER_DIR}/scripts/install_epoch_retrain_cron.sh" "${@:2}"
+    ;;
   manifest-check)
     _activate_venv
     python - <<'PY'
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from deploy.manifest_helpers import build_hybrid_model_manifest, manifest_startup_report
 
 repo_root = Path(".").resolve()
+load_dotenv(repo_root / ".env", override=False)
 manifest = build_hybrid_model_manifest(repo_root=repo_root)
 report = manifest_startup_report(manifest)
 print("status:", report["status"])
@@ -110,7 +119,7 @@ PY
     echo "    --wallet-path ${WALLET_PATH} --network ${NETWORK}"
     ;;
   *)
-    echo "Usage: $0 {start|stop|restart|logs|status|download-benchmark|train|train-hybrid|validate|manifest-check|register-info}"
+    echo "Usage: $0 {start|stop|restart|logs|status|download-benchmark|train|train-hybrid|validate|manifest-check|retrain-before-epoch|install-epoch-cron|register-info}"
     exit 1
     ;;
 esac

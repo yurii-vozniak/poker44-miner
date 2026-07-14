@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 cd "/root/workspaces/projects/poker44"
+if [ -f "/root/workspaces/projects/poker44/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "/root/workspaces/projects/poker44/.env"
+  set +a
+fi
 source miner_env/bin/activate
 export PYTHONPATH="/root/workspaces/projects/poker44"
 export BT_NO_PARSE_CLI_ARGS=0

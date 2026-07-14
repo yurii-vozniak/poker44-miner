@@ -22,6 +22,12 @@ def add_args(cls, parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--netuid", type=int, help="Subnet netuid", default=126)
     
     parser.add_argument(
+        "--neuron.name",
+        type=str,
+        default="miner",
+        help="Neuron name used for logging and state paths.",
+    )
+    parser.add_argument(
         "--neuron.device",
         type=str,
         default="cpu",

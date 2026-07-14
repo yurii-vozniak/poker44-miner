@@ -147,8 +147,17 @@ main() {
   install_modules
   install_bittensor_cli
   guard_bittensor_versions
+  fix_bittensor_scalecodec_conflict
   verify_installation
   show_completion_info
+}
+
+fix_bittensor_scalecodec_conflict() {
+  info_msg "Ensuring cyscale/scalecodec compatibility for bittensor 10..."
+  pip uninstall scalecodec cyscale -y >/dev/null 2>&1 || true
+  pip install cyscale --force-reinstall >/dev/null || handle_error "Failed to install cyscale"
+  pip install 'bittensor-wallet>=4.1.0' >/dev/null || handle_error "Failed to upgrade bittensor-wallet"
+  success_msg "Bittensor runtime dependencies verified."
 }
 
 main "$@"

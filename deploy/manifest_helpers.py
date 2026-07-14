@@ -84,9 +84,9 @@ def build_hybrid_model_manifest(
                 "validator-only live evaluation labels or private hand histories."
             ),
             "notes": (
-                "Hybrid LightGBM classifier plus Isolation Forest anomaly detector with "
-                "a hand-level LightGBM booster. Chunk scores fuse supervised, anomaly, "
-                "and per-hand aggregates tuned for validator window reward."
+                "Hybrid LightGBM classifier plus Isolation Forest anomaly detector. "
+                "Chunk scores fuse supervised and anomaly paths with stability-first "
+                "fusion tuning for v2.2 multi-round Top-10 competition scoring."
             ),
         },
     )

@@ -74,7 +74,11 @@ class Miner(BaseMinerNeuron):
                 "Sending opaque manifest to validators; dashboard scores may stay at 0 "
                 f"until manifest is transparent: missing={self.manifest_compliance.get('missing_fields')}"
             )
-        bt.logging.info(f"Scored {len(chunks)} chunks with hybrid model.")
+        bt.logging.info(
+            f"Scored {len(chunks)} chunks with hybrid model "
+            f"(manifest_digest={self.manifest_digest[:12]}…, "
+            f"status={self.manifest_compliance.get('status')})."
+        )
         return synapse
 
     async def blacklist(self, synapse: DetectionSynapse) -> Tuple[bool, str]:
