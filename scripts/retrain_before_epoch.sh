@@ -100,7 +100,38 @@ fi
 log "Pre-epoch retrain starting for ${NEXT_EPOCH_ID} (current=${CURRENT_EPOCH_ID}, seconds_remaining=${SECONDS_REMAINING})."
 
 python deploy/download_benchmark.py --dates "${TRAIN_DATES}" --refresh
-python deploy/train_stacked.py --dates "${TRAIN_DATES}" --holdout-dates "${HOLDOUT_DATES}"
+python deploy/train_stacked.py \
+  --dates "${TRAIN_DATES}" \
+  --holdout-dates "${HOLDOUT_DATES}" \
+  --output models/stacked_candidate.joblib
+
+# Promote the candidate only if it does not regress on selection reward.
+# A small tolerance favors recency: fresher training data is worth a tiny
+# validation drop, but a large drop means the retrain went wrong.
+PROMOTED="$(python - <<'PY'
+import json
+from pathlib import Path
+
+tolerance = 0.02
+candidate_meta = Path("models/stacked_candidate.json")
+current_meta = Path("models/stacked.json")
+
+candidate = json.loads(candidate_meta.read_text())["selection_reward"]
+current = (
+    json.loads(current_meta.read_text()).get("selection_reward", 0.0)
+    if current_meta.is_file()
+    else 0.0
+)
+if candidate >= current - tolerance:
+    Path("models/stacked_candidate.joblib").replace("models/stacked.joblib")
+    candidate_meta.replace(current_meta)
+    print(f"promoted candidate={candidate:.4f} current={current:.4f}")
+else:
+    print(f"kept current={current:.4f} candidate={candidate:.4f}")
+PY
+)"
+log "Model promotion: ${PROMOTED}"
+
 bash scripts/poker44-miner validate
 bash scripts/poker44-miner manifest-check
 
