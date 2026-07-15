@@ -32,7 +32,7 @@ from deploy.eval_metrics import evaluate_scores, windowed_reward
 from deploy.features import FEATURE_NAMES
 from poker44.score.scoring import reward
 
-DEFAULT_MODEL_VERSION = "10"
+DEFAULT_MODEL_VERSION = "11"
 MAX_HUMAN_FPR = 0.05
 
 
