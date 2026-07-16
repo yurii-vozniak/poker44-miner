@@ -35,7 +35,7 @@ def apply_batch_calibration(
     zero on mixed batches.
     """
     if max_pos_frac is None:
-        max_pos_frac = _parse_float("POKER44_BATCH_MAX_POS_FRAC", 0.15)
+        max_pos_frac = _parse_float("POKER44_BATCH_MAX_POS_FRAC", 0.25)
     if high_band is None:
         high_band = (
             _parse_float("POKER44_BATCH_HIGH_LO", 0.55),

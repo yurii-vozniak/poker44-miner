@@ -19,7 +19,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 
-from deploy.batch_calibration import apply_batch_calibration
+from deploy.inference_postprocess import finalize_batch_scores
 from deploy.benchmark_client import BenchmarkClient
 from deploy.benchmark_dataset import (
     download_releases,
@@ -29,10 +29,12 @@ from deploy.benchmark_dataset import (
     summarize_examples,
 )
 from deploy.eval_metrics import evaluate_scores, windowed_reward
-from deploy.features import FEATURE_NAMES
+from deploy.features import FEATURE_NAMES, HAND_KEYS, hand_features
+from deploy.iso_calibration import IsoCalibration, fit_iso_calibration, iso_bot_probability
 from poker44.score.scoring import reward
+from sklearn.ensemble import IsolationForest
 
-DEFAULT_MODEL_VERSION = "11"
+DEFAULT_MODEL_VERSION = "12"
 MAX_HUMAN_FPR = 0.05
 
 
@@ -50,7 +52,10 @@ def _recency_weights(examples, *, half_life_days: float = 21.0) -> np.ndarray:
 def _batched_window_reward(
     scores: np.ndarray,
     y_true: np.ndarray,
+    val_examples,
     *,
+    hand_boost_weight: float = 0.0,
+    rank_blend: float | None = None,
     batch_size: int = 100,
     n_trials: int = 8,
     seed: int = 42,
@@ -60,6 +65,7 @@ def _batched_window_reward(
     if labels.size < 20 or len(set(labels.tolist())) < 2:
         return None
 
+    chunks = [example.chunk for example in val_examples]
     rng = np.random.default_rng(seed)
     rewards: list[float] = []
     for _ in range(n_trials):
@@ -69,7 +75,12 @@ def _batched_window_reward(
             part = order[start : start + batch_size]
             if part.size < 20:
                 continue
-            batch_scores = apply_batch_calibration(values[part])
+            batch_scores = finalize_batch_scores(
+                values[part],
+                [chunks[index] for index in part],
+                hand_boost_weight=hand_boost_weight,
+                rank_blend=rank_blend,
+            )
             _, metrics = reward(batch_scores, labels[part])
             batch_rewards.append(float(metrics["reward"]))
         if batch_rewards:
@@ -77,16 +88,198 @@ def _batched_window_reward(
     return float(np.mean(rewards)) if rewards else None
 
 
-def _selection_reward(scores: np.ndarray, y_true: np.ndarray) -> float:
+def _selection_reward(
+    scores: np.ndarray,
+    y_true: np.ndarray,
+    val_examples,
+    *,
+    hand_boost_weight: float = 0.0,
+    rank_blend: float | None = None,
+) -> float:
     metrics = evaluate_scores(scores, y_true)
     flat_reward = float(metrics.get("reward") or -1.0)
     window_reward = windowed_reward(scores, y_true, window_size=200, n_trials=8)
     if window_reward is None:
         window_reward = flat_reward
-    batch_reward = _batched_window_reward(scores, y_true)
+    batch_reward = _batched_window_reward(
+        scores,
+        y_true,
+        val_examples,
+        hand_boost_weight=hand_boost_weight,
+        rank_blend=rank_blend,
+    )
     if batch_reward is None:
         batch_reward = flat_reward
-    return 0.35 * flat_reward + 0.25 * window_reward + 0.40 * batch_reward
+    return 0.20 * flat_reward + 0.20 * window_reward + 0.60 * batch_reward
+
+
+def _hand_aggregate_scores(
+    examples,
+    hand_probs: np.ndarray,
+    *,
+    mode: str = "p90",
+) -> np.ndarray:
+    aggregated: list[float] = []
+    offset = 0
+    for example in examples:
+        hand_count = len(example.chunk or [])
+        if hand_count <= 0:
+            aggregated.append(0.0)
+            continue
+        chunk_probs = hand_probs[offset : offset + hand_count]
+        offset += hand_count
+        if mode == "max":
+            aggregated.append(float(np.max(chunk_probs)))
+        elif mode == "p75":
+            aggregated.append(float(np.percentile(chunk_probs, 75)))
+        else:
+            aggregated.append(float(np.percentile(chunk_probs, 90)))
+    return np.asarray(aggregated, dtype=np.float64)
+
+
+def _fit_hand_lgbm(train_examples, val_examples, *, train_weights: np.ndarray | None = None):
+    x_train_rows: list[np.ndarray] = []
+    y_train: list[int] = []
+    hand_weights: list[float] = []
+    for index, example in enumerate(train_examples):
+        chunk_weight = float(train_weights[index]) if train_weights is not None else 1.0
+        for hand in example.chunk or []:
+            x_train_rows.append(hand_features(hand, for_training=True))
+            y_train.append(int(example.label))
+            hand_weights.append(chunk_weight)
+
+    if not x_train_rows or len(set(y_train)) < 2:
+        return None, None
+
+    x_train = np.vstack(x_train_rows)
+    y_train_arr = np.asarray(y_train, dtype=np.int32)
+    x_train_frame = pd.DataFrame(x_train, columns=HAND_KEYS)
+
+    x_val_rows: list[np.ndarray] = []
+    y_val: list[int] = []
+    for example in val_examples:
+        for hand in example.chunk or []:
+            x_val_rows.append(hand_features(hand, for_training=True))
+            y_val.append(int(example.label))
+    x_val = np.vstack(x_val_rows) if x_val_rows else x_train[:1]
+    y_val_arr = np.asarray(y_val if y_val else y_train[:1], dtype=np.int32)
+    x_val_frame = pd.DataFrame(x_val, columns=HAND_KEYS)
+
+    hand_lgbm = lgb.LGBMClassifier(
+        n_estimators=500,
+        learning_rate=0.03,
+        num_leaves=31,
+        min_child_samples=20,
+        subsample=0.85,
+        colsample_bytree=0.85,
+        reg_alpha=0.3,
+        reg_lambda=0.3,
+        class_weight="balanced",
+        random_state=42,
+        verbose=-1,
+    )
+    hand_lgbm.fit(
+        x_train_frame,
+        y_train_arr,
+        sample_weight=np.asarray(hand_weights, dtype=np.float32),
+        eval_set=[(x_val_frame, y_val_arr)],
+        eval_metric="average_precision",
+        callbacks=[lgb.early_stopping(stopping_rounds=60, verbose=False)],
+    )
+
+    val_probs = hand_lgbm.predict_proba(x_val_frame)[:, 1]
+    hand_calibrator: IsotonicRegression | None = None
+    if len(np.unique(y_val_arr)) > 1:
+        hand_calibrator = IsotonicRegression(out_of_bounds="clip")
+        hand_calibrator.fit(val_probs, y_val_arr)
+    return hand_lgbm, hand_calibrator
+
+
+def _hand_probs_for_examples(
+    examples,
+    *,
+    hand_lgbm: lgb.LGBMClassifier,
+    hand_calibrator: IsotonicRegression | None,
+) -> np.ndarray:
+    rows: list[np.ndarray] = []
+    for example in examples:
+        for hand in example.chunk or []:
+            rows.append(hand_features(hand, for_training=True))
+    if not rows:
+        return np.zeros(0, dtype=np.float64)
+    frame = pd.DataFrame(np.vstack(rows), columns=HAND_KEYS)
+    probs = hand_lgbm.predict_proba(frame)[:, 1]
+    if hand_calibrator is not None:
+        probs = np.clip(hand_calibrator.predict(probs), 0.0, 1.0)
+    return probs
+
+
+def _fuse_validation_scores(
+    supervised: np.ndarray,
+    anomaly: np.ndarray,
+    hand_chunk: np.ndarray,
+    *,
+    fusion_mode: str,
+    iso_blend_weight: float,
+    hand_mix_weight: float,
+) -> np.ndarray:
+    if fusion_mode == "blend":
+        fused = supervised + iso_blend_weight * anomaly * (1.0 - supervised)
+    elif fusion_mode == "supervised":
+        fused = supervised
+    else:
+        fused = np.maximum(supervised, anomaly)
+    if hand_mix_weight > 0.0:
+        fused = np.clip(np.maximum(fused, hand_mix_weight * hand_chunk), 0.0, 1.0)
+    return fused
+
+
+def _tune_fusion(
+    val_scores: np.ndarray,
+    val_anomaly: np.ndarray,
+    val_hand_chunk: np.ndarray,
+    y_val: np.ndarray,
+    val_examples,
+) -> dict[str, float | str | None]:
+    best: dict[str, float | str | None] = {
+        "selection_reward": -1.0,
+        "fusion_mode": "max",
+        "iso_blend_weight": 0.0,
+        "hand_mix_weight": 0.0,
+        "hand_boost_weight": 0.0,
+        "rank_blend": 0.25,
+    }
+    for fusion_mode in ("max", "blend"):
+        iso_weights = (0.0, 0.15, 0.25) if fusion_mode == "blend" else (0.0,)
+        for iso_w in iso_weights:
+            for hand_w in (0.0, 0.12, 0.18, 0.24):
+                fused = _fuse_validation_scores(
+                    val_scores,
+                    val_anomaly,
+                    val_hand_chunk,
+                    fusion_mode=fusion_mode,
+                    iso_blend_weight=iso_w,
+                    hand_mix_weight=hand_w,
+                )
+                for hand_boost_w in (0.0, 0.06, 0.10, 0.14):
+                    for rank_blend in (0.0, 0.15, 0.25, 0.35):
+                        selection = _selection_reward(
+                            fused,
+                            y_val,
+                            val_examples,
+                            hand_boost_weight=hand_boost_w,
+                            rank_blend=rank_blend,
+                        )
+                        if selection > float(best["selection_reward"]):
+                            best = {
+                                "selection_reward": selection,
+                                "fusion_mode": fusion_mode,
+                                "iso_blend_weight": iso_w,
+                                "hand_mix_weight": hand_w,
+                                "hand_boost_weight": hand_boost_w,
+                                "rank_blend": rank_blend,
+                            }
+    return best
 
 
 def _make_base_specs() -> list[tuple[str, Any]]:
@@ -189,8 +382,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("models/stacked.joblib"))
     parser.add_argument("--cache-dir", type=Path, default=Path("data/benchmark"))
-    parser.add_argument("--dates", type=int, default=30)
-    parser.add_argument("--holdout-dates", type=int, default=5)
+    parser.add_argument("--dates", type=int, default=35)
+    parser.add_argument("--holdout-dates", type=int, default=7)
     parser.add_argument("--refresh-cache", action="store_true")
     args = parser.parse_args()
 
@@ -244,8 +437,45 @@ def main() -> None:
         calibrator.fit(val_scores, y_val)
         val_scores = np.clip(calibrator.predict(val_scores), 0.0, 1.0)
 
-    metrics = evaluate_scores(val_scores, y_val)
-    selection = _selection_reward(val_scores, y_val)
+    human_mask = y_train == 0
+    iso_train = x_train_scaled[human_mask] if np.any(human_mask) else x_train_scaled
+    iso_forest = IsolationForest(
+        n_estimators=300,
+        contamination=min(max(float(np.mean(y_train)), 0.01), 0.49),
+        random_state=42,
+        n_jobs=-1,
+    )
+    iso_forest.fit(iso_train)
+    iso_calibration = fit_iso_calibration(iso_forest, iso_train)
+    iso_calibration_dict = iso_calibration.to_dict()
+    val_anomaly = iso_bot_probability(iso_forest.score_samples(x_val_scaled), iso_calibration)
+
+    hand_lgbm, hand_calibrator = _fit_hand_lgbm(
+        train_examples,
+        val_examples,
+        train_weights=sample_weight,
+    )
+    val_hand_chunk = np.zeros(len(val_examples), dtype=np.float64)
+    if hand_lgbm is not None:
+        hand_probs = _hand_probs_for_examples(
+            val_examples,
+            hand_lgbm=hand_lgbm,
+            hand_calibrator=hand_calibrator,
+        )
+        val_hand_chunk = _hand_aggregate_scores(val_examples, hand_probs, mode="p90")
+
+    fusion = _tune_fusion(val_scores, val_anomaly, val_hand_chunk, y_val, val_examples)
+    fused_val = _fuse_validation_scores(
+        val_scores,
+        val_anomaly,
+        val_hand_chunk,
+        fusion_mode=str(fusion["fusion_mode"]),
+        iso_blend_weight=float(fusion["iso_blend_weight"]),
+        hand_mix_weight=float(fusion["hand_mix_weight"]),
+    )
+    selection = float(fusion["selection_reward"])
+    metrics = evaluate_scores(fused_val, y_val)
+    print("Fusion config:", json.dumps(fusion, indent=2))
     print("Validation metrics:", json.dumps(metrics, indent=2))
     print(f"Selection reward: {selection:.4f}")
 
@@ -253,11 +483,19 @@ def main() -> None:
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "model_name": "poker44-stacked-ensemble",
         "model_version": DEFAULT_MODEL_VERSION,
-        "framework": "lightgbm+sklearn-stack",
+        "framework": "lightgbm+sklearn-stack+iso+hand",
         "feature_count": len(FEATURE_NAMES),
         "base_models": [name for name, _ in base_models],
         "validation": metrics,
         "selection_reward": selection,
+        "fusion": fusion,
+        "iso_min": float(np.min(iso_forest.score_samples(iso_train))),
+        "iso_span": max(
+            float(np.max(iso_forest.score_samples(iso_train)))
+            - float(np.min(iso_forest.score_samples(iso_train))),
+            1e-8,
+        ),
+        "hand_aggregate_mode": "p90",
     }
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -268,6 +506,16 @@ def main() -> None:
             "base_models": base_models,
             "meta": meta,
             "calibrator": calibrator,
+            "iso_forest": iso_forest,
+            "iso_calibration": iso_calibration_dict,
+            "hand_lgbm": hand_lgbm,
+            "hand_calibrator": hand_calibrator,
+            "hand_aggregate_mode": "p90",
+            "hand_mix_weight": float(fusion["hand_mix_weight"]),
+            "hand_boost_weight": float(fusion["hand_boost_weight"]),
+            "rank_blend": fusion["rank_blend"],
+            "iso_blend_weight": float(fusion["iso_blend_weight"]),
+            "fusion_mode": str(fusion["fusion_mode"]),
             "metadata": metadata,
         },
         args.output,

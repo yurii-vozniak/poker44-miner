@@ -30,7 +30,7 @@ from deploy.features import FEATURE_NAMES, HAND_KEYS, _heuristic_score, hand_fea
 from deploy.iso_calibration import fit_iso_calibration, iso_bot_probability
 from poker44.score.scoring import reward
 
-DEFAULT_MODEL_VERSION = "9"
+DEFAULT_MODEL_VERSION = "10"
 SELECTION_WINDOW_SIZE = 200
 MAX_HUMAN_FPR = 0.05
 
@@ -632,9 +632,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("models/hybrid.joblib"))
     parser.add_argument("--cache-dir", type=Path, default=Path("data/benchmark"))
-    parser.add_argument("--dates", type=int, default=90)
+    parser.add_argument("--dates", type=int, default=35)
     parser.add_argument("--source-dates", nargs="*", default=None)
-    parser.add_argument("--holdout-dates", type=int, default=5)
+    parser.add_argument("--holdout-dates", type=int, default=7)
     parser.add_argument("--max-chunks-per-date", type=int, default=None)
     parser.add_argument("--refresh-cache", action="store_true")
     args = parser.parse_args()

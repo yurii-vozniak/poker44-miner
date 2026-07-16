@@ -9,7 +9,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from deploy.batch_calibration import apply_batch_calibration
+from deploy.inference_postprocess import finalize_batch_scores
 from deploy.features import FEATURE_NAMES, HAND_KEYS, chunk_features, hand_features
 from deploy.iso_calibration import IsoCalibration, iso_bot_probability
 
@@ -174,5 +174,5 @@ class HybridDetector:
             scores = self._fuse_scores(supervised, anomaly, hand_boost=hand_boost)
         scores = self._apply_hand_mix(scores, chunks)
         if len(scores) > 1:
-            scores = apply_batch_calibration(scores)
+            scores = finalize_batch_scores(scores, chunks)
         return [round(max(0.0, min(1.0, float(score))), 6) for score in scores]
