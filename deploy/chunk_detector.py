@@ -21,6 +21,10 @@ def load_chunk_detector(model_path: str | Path) -> ChunkDetector:
 
     artifact: dict[str, Any] = joblib.load(path)
     model_type = str(artifact.get("model_type") or "hybrid")
+    if model_type == "ensemble":
+        from deploy.ensemble_detector import EnsembleDetector
+
+        return EnsembleDetector.from_artifact(artifact, model_path=path)
     if model_type == "stacked":
         from deploy.stacked_detector import StackedDetector
 

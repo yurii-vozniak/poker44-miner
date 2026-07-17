@@ -34,7 +34,7 @@ from deploy.iso_calibration import IsoCalibration, fit_iso_calibration, iso_bot_
 from poker44.score.scoring import reward
 from sklearn.ensemble import IsolationForest
 
-DEFAULT_MODEL_VERSION = "12"
+DEFAULT_MODEL_VERSION = "13"
 MAX_HUMAN_FPR = 0.05
 
 
@@ -110,7 +110,7 @@ def _selection_reward(
     )
     if batch_reward is None:
         batch_reward = flat_reward
-    return 0.20 * flat_reward + 0.20 * window_reward + 0.60 * batch_reward
+    return 0.15 * flat_reward + 0.85 * batch_reward
 
 
 def _hand_aggregate_scores(
@@ -261,8 +261,8 @@ def _tune_fusion(
                     iso_blend_weight=iso_w,
                     hand_mix_weight=hand_w,
                 )
-                for hand_boost_w in (0.0, 0.06, 0.10, 0.14):
-                    for rank_blend in (0.0, 0.15, 0.25, 0.35):
+                for hand_boost_w in (0.08, 0.12, 0.16):
+                    for rank_blend in (0.25, 0.35, 0.45, 0.55):
                         selection = _selection_reward(
                             fused,
                             y_val,
@@ -382,7 +382,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("models/stacked.joblib"))
     parser.add_argument("--cache-dir", type=Path, default=Path("data/benchmark"))
-    parser.add_argument("--dates", type=int, default=35)
+    parser.add_argument("--dates", type=int, default=36)
     parser.add_argument("--holdout-dates", type=int, default=7)
     parser.add_argument("--refresh-cache", action="store_true")
     args = parser.parse_args()
