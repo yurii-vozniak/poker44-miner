@@ -29,12 +29,19 @@ from deploy.benchmark_dataset import (
     summarize_examples,
 )
 from deploy.eval_metrics import evaluate_scores, windowed_reward
+from deploy.stability_metrics import (
+    format_stability_report,
+    meets_stability_floor,
+    per_date_batched_rewards,
+    stability_selection_reward,
+)
 from deploy.features import FEATURE_NAMES, HAND_KEYS, hand_features
 from deploy.iso_calibration import IsoCalibration, fit_iso_calibration, iso_bot_probability
 from poker44.score.scoring import reward
 from sklearn.ensemble import IsolationForest
 
-DEFAULT_MODEL_VERSION = "13"
+DEFAULT_MODEL_VERSION = "14"
+STABILITY_FLOOR = 0.55
 MAX_HUMAN_FPR = 0.05
 
 
@@ -110,7 +117,18 @@ def _selection_reward(
     )
     if batch_reward is None:
         batch_reward = flat_reward
-    return 0.15 * flat_reward + 0.85 * batch_reward
+    per_date = per_date_batched_rewards(
+        scores,
+        y_true,
+        val_examples,
+        hand_boost_weight=hand_boost_weight,
+        rank_blend=rank_blend,
+    )
+    return stability_selection_reward(
+        per_date,
+        floor=STABILITY_FLOOR,
+        batch_mean=batch_reward,
+    )
 
 
 def _hand_aggregate_scores(
@@ -261,8 +279,8 @@ def _tune_fusion(
                     iso_blend_weight=iso_w,
                     hand_mix_weight=hand_w,
                 )
-                for hand_boost_w in (0.08, 0.12, 0.16):
-                    for rank_blend in (0.25, 0.35, 0.45, 0.55):
+                for hand_boost_w in (0.10, 0.14, 0.18):
+                    for rank_blend in (0.30, 0.40, 0.50, 0.60):
                         selection = _selection_reward(
                             fused,
                             y_val,
@@ -383,7 +401,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("models/stacked.joblib"))
     parser.add_argument("--cache-dir", type=Path, default=Path("data/benchmark"))
     parser.add_argument("--dates", type=int, default=36)
-    parser.add_argument("--holdout-dates", type=int, default=7)
+    parser.add_argument("--holdout-dates", type=int, default=10)
     parser.add_argument("--refresh-cache", action="store_true")
     args = parser.parse_args()
 
@@ -474,8 +492,16 @@ def main() -> None:
         hand_mix_weight=float(fusion["hand_mix_weight"]),
     )
     selection = float(fusion["selection_reward"])
+    per_date_report = per_date_batched_rewards(
+        fused_val,
+        y_val,
+        val_examples,
+        hand_boost_weight=float(fusion["hand_boost_weight"]),
+        rank_blend=float(fusion["rank_blend"]) if fusion["rank_blend"] is not None else None,
+    )
     metrics = evaluate_scores(fused_val, y_val)
     print("Fusion config:", json.dumps(fusion, indent=2))
+    print("Stability report:", json.dumps(format_stability_report(per_date_report), indent=2))
     print("Validation metrics:", json.dumps(metrics, indent=2))
     print(f"Selection reward: {selection:.4f}")
 
@@ -489,6 +515,7 @@ def main() -> None:
         "validation": metrics,
         "selection_reward": selection,
         "fusion": fusion,
+        "stability_report": format_stability_report(per_date_report),
         "iso_min": float(np.min(iso_forest.score_samples(iso_train))),
         "iso_span": max(
             float(np.max(iso_forest.score_samples(iso_train)))

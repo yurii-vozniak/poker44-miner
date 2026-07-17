@@ -18,15 +18,20 @@ from deploy.benchmark_dataset import (
     split_examples_by_date,
 )
 from deploy.chunk_detector import load_chunk_detector
-from deploy.ensemble_detector import EnsembleDetector
-from deploy.eval_metrics import evaluate_scores
 from deploy.features import chunk_features
-from deploy.inference_postprocess import finalize_batch_scores
+from deploy.stability_metrics import (
+    format_stability_report,
+    meets_stability_floor,
+    per_date_batched_rewards,
+    stability_selection_reward,
+    stability_summary,
+)
 from deploy.train_stacked import _batched_window_reward
 from poker44.score.scoring import reward
 from poker44.validator.payload_view import prepare_hand_for_miner
 
-DEFAULT_MODEL_VERSION = "13"
+DEFAULT_MODEL_VERSION = "14"
+STABILITY_FLOOR = 0.55
 
 
 def _selection_reward(
@@ -36,8 +41,14 @@ def _selection_reward(
     *,
     hand_boost_weight: float,
     rank_blend: float,
-) -> float:
-    flat = float(evaluate_scores(scores, labels).get("reward") or -1.0)
+) -> tuple[float, dict[str, float]]:
+    per_date = per_date_batched_rewards(
+        scores,
+        labels,
+        val_examples,
+        hand_boost_weight=hand_boost_weight,
+        rank_blend=rank_blend,
+    )
     batch = _batched_window_reward(
         scores,
         labels,
@@ -45,9 +56,8 @@ def _selection_reward(
         hand_boost_weight=hand_boost_weight,
         rank_blend=rank_blend,
     )
-    if batch is None:
-        batch = flat
-    return 0.15 * flat + 0.85 * batch
+    selection = stability_selection_reward(per_date, floor=STABILITY_FLOOR, batch_mean=batch)
+    return selection, per_date
 
 
 def main() -> None:
@@ -57,7 +67,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("models/ensemble.joblib"))
     parser.add_argument("--cache-dir", type=Path, default=Path("data/benchmark"))
     parser.add_argument("--dates", type=int, default=36)
-    parser.add_argument("--holdout-dates", type=int, default=7)
+    parser.add_argument("--holdout-dates", type=int, default=10)
     parser.add_argument("--refresh-cache", action="store_true")
     args = parser.parse_args()
 
@@ -96,13 +106,14 @@ def main() -> None:
         else np.zeros(len(val_examples))
     )
 
-    best: dict[str, float] = {"selection_reward": -1.0}
-    for stacked_w in (0.45, 0.55, 0.65):
+    best: dict[str, float | dict] = {"selection_reward": -2.0}
+    best_per_date: dict[str, float] = {}
+    for stacked_w in (0.40, 0.50, 0.60):
         hybrid_w = 1.0 - stacked_w
-        for iso_w in (0.0, 0.15, 0.25):
-            for hand_mix_w in (0.0, 0.15, 0.22):
-                for hand_boost_w in (0.08, 0.12, 0.16):
-                    for rank_blend in (0.25, 0.35, 0.45):
+        for iso_w in (0.0, 0.20, 0.30):
+            for hand_mix_w in (0.0, 0.18, 0.26):
+                for hand_boost_w in (0.10, 0.14, 0.18):
+                    for rank_blend in (0.30, 0.40, 0.50):
                         fused = np.clip(
                             stacked_w * stacked_scores + hybrid_w * hybrid_scores,
                             0.0,
@@ -112,14 +123,14 @@ def main() -> None:
                             fused = np.clip(np.maximum(fused, iso_w * iso_scores), 0.0, 1.0)
                         if hand_mix_w > 0.0:
                             fused = np.clip(np.maximum(fused, hand_mix_w * hand_scores), 0.0, 1.0)
-                        selection = _selection_reward(
+                        selection, per_date = _selection_reward(
                             fused,
                             labels,
                             val_examples,
                             hand_boost_weight=hand_boost_w,
                             rank_blend=rank_blend,
                         )
-                        if selection > best["selection_reward"]:
+                        if selection > float(best["selection_reward"]):
                             best = {
                                 "selection_reward": selection,
                                 "stacked_weight": stacked_w,
@@ -128,7 +139,10 @@ def main() -> None:
                                 "hand_mix_weight": hand_mix_w,
                                 "hand_boost_weight": hand_boost_w,
                                 "rank_blend": rank_blend,
+                                "stability": stability_summary(per_date),
+                                "meets_floor_0_55": meets_stability_floor(per_date),
                             }
+                            best_per_date = per_date
 
     metadata = {
         "trained_at": datetime.now(timezone.utc).isoformat(),
@@ -137,7 +151,8 @@ def main() -> None:
         "framework": "stacked+hybrid+iso",
         "validation_rows": len(val_examples),
         "selection_reward": best["selection_reward"],
-        "fusion": best,
+        "fusion": {k: v for k, v in best.items() if k != "selection_reward"},
+        "stability_report": format_stability_report(best_per_date),
         "stacked_model_version": stacked.metadata.get("model_version"),
         "hybrid_model_version": hybrid.metadata.get("model_version"),
     }
@@ -158,7 +173,8 @@ def main() -> None:
     joblib.dump(artifact, args.output)
     sidecar = args.output.with_suffix(".json")
     sidecar.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
-    print("Best fusion:", json.dumps(best, indent=2))
+    print("Stability report:", json.dumps(format_stability_report(best_per_date), indent=2))
+    print("Best fusion:", json.dumps({k: v for k, v in best.items() if k != "selection_reward"}, indent=2, default=str))
     print(f"Saved ensemble to {args.output}")
 
 
