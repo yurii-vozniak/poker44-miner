@@ -30,7 +30,7 @@ from deploy.train_stacked import _batched_window_reward
 from poker44.score.scoring import reward
 from poker44.validator.payload_view import prepare_hand_for_miner
 
-DEFAULT_MODEL_VERSION = "14"
+DEFAULT_MODEL_VERSION = "15"
 STABILITY_FLOOR = 0.55
 
 
@@ -48,6 +48,7 @@ def _selection_reward(
         val_examples,
         hand_boost_weight=hand_boost_weight,
         rank_blend=rank_blend,
+        adaptive_rank=True,
     )
     batch = _batched_window_reward(
         scores,
@@ -66,7 +67,7 @@ def main() -> None:
     parser.add_argument("--hybrid-path", type=Path, default=Path("models/hybrid.joblib"))
     parser.add_argument("--output", type=Path, default=Path("models/ensemble.joblib"))
     parser.add_argument("--cache-dir", type=Path, default=Path("data/benchmark"))
-    parser.add_argument("--dates", type=int, default=36)
+    parser.add_argument("--dates", type=int, default=37)
     parser.add_argument("--holdout-dates", type=int, default=10)
     parser.add_argument("--refresh-cache", action="store_true")
     args = parser.parse_args()
@@ -95,10 +96,13 @@ def main() -> None:
     labels = np.asarray([example.label for example in val_examples], dtype=int)
     stacked_scores = stacked.score_features(features)
     hybrid_scores = hybrid._supervised_probability(hybrid.scaler.transform(features))
-    iso_scores = (
+    iso_scores = np.maximum(
         stacked._anomaly_probability(features)
         if hasattr(stacked, "_anomaly_probability")
-        else np.zeros(len(val_examples))
+        else np.zeros(len(val_examples)),
+        hybrid._anomaly_probability(hybrid.scaler.transform(features))
+        if hasattr(hybrid, "_anomaly_probability")
+        else np.zeros(len(val_examples)),
     )
     hand_scores = (
         stacked._hand_aggregate_for_chunks(prepared)
@@ -108,12 +112,12 @@ def main() -> None:
 
     best: dict[str, float | dict] = {"selection_reward": -2.0}
     best_per_date: dict[str, float] = {}
-    for stacked_w in (0.40, 0.50, 0.60):
+    for stacked_w in (0.45, 0.55, 0.65):
         hybrid_w = 1.0 - stacked_w
-        for iso_w in (0.0, 0.20, 0.30):
+        for iso_w in (0.15, 0.25, 0.35):
             for hand_mix_w in (0.0, 0.18, 0.26):
                 for hand_boost_w in (0.10, 0.14, 0.18):
-                    for rank_blend in (0.30, 0.40, 0.50):
+                    for rank_blend in (0.35, 0.45, 0.55):
                         fused = np.clip(
                             stacked_w * stacked_scores + hybrid_w * hybrid_scores,
                             0.0,
@@ -167,6 +171,7 @@ def main() -> None:
         "hand_mix_weight": best["hand_mix_weight"],
         "hand_boost_weight": best["hand_boost_weight"],
         "rank_blend": best["rank_blend"],
+        "adaptive_rank": True,
         "metadata": metadata,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -44,17 +44,39 @@ def apply_hand_boost(
     return np.clip(fused + weight * boost * (1.0 - fused), 0.0, 1.0)
 
 
-def rank_coherent_blend(scores: np.ndarray, *, alpha: float | None = None) -> np.ndarray:
+def effective_rank_blend(
+    scores: np.ndarray,
+    rank_blend: float | None,
+    *,
+    adaptive: bool = True,
+) -> float:
+    """Increase rank weight when the batch has weak score separation (live OOD)."""
+    alpha = rank_blend if rank_blend is not None else _parse_float("POKER44_RANK_BLEND", 0.25)
+    if not adaptive or scores.size <= 1:
+        return alpha
+    std = float(np.std(scores))
+    if std < 0.06:
+        return min(0.70, alpha + 0.35)
+    if std < 0.12:
+        return min(0.55, alpha + 0.20)
+    return alpha
+
+
+def rank_coherent_blend(
+    scores: np.ndarray,
+    *,
+    alpha: float | None = None,
+    adaptive: bool = True,
+) -> np.ndarray:
     values = np.asarray(scores, dtype=np.float64)
     n = values.size
     if n <= 1:
         return values
-    if alpha is None:
-        alpha = _parse_float("POKER44_RANK_BLEND", 0.25)
+    resolved = effective_rank_blend(values, alpha, adaptive=adaptive)
     order = np.argsort(values, kind="mergesort")
     ranks = np.empty(n, dtype=np.float64)
     ranks[order] = np.linspace(0.0, 1.0, n)
-    return np.clip((1.0 - alpha) * values + alpha * ranks, 0.0, 1.0)
+    return np.clip((1.0 - resolved) * values + resolved * ranks, 0.0, 1.0)
 
 
 def finalize_batch_scores(
@@ -63,13 +85,14 @@ def finalize_batch_scores(
     *,
     hand_boost_weight: float = 0.0,
     rank_blend: float | None = None,
+    adaptive_rank: bool = True,
     batch_calibrate: bool = True,
 ) -> np.ndarray:
     result = np.asarray(scores, dtype=np.float64)
     if chunks is not None and hand_boost_weight > 0.0:
         result = apply_hand_boost(result, chunks, weight=hand_boost_weight)
     if result.size > 1:
-        result = rank_coherent_blend(result, alpha=rank_blend)
+        result = rank_coherent_blend(result, alpha=rank_blend, adaptive=adaptive_rank)
         if batch_calibrate:
             result = apply_batch_calibration(result)
     return np.clip(result, 0.0, 1.0)

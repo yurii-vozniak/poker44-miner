@@ -40,7 +40,7 @@ from deploy.iso_calibration import IsoCalibration, fit_iso_calibration, iso_bot_
 from poker44.score.scoring import reward
 from sklearn.ensemble import IsolationForest
 
-DEFAULT_MODEL_VERSION = "14"
+DEFAULT_MODEL_VERSION = "15"
 STABILITY_FLOOR = 0.55
 MAX_HUMAN_FPR = 0.05
 
@@ -63,6 +63,7 @@ def _batched_window_reward(
     *,
     hand_boost_weight: float = 0.0,
     rank_blend: float | None = None,
+    adaptive_rank: bool = True,
     batch_size: int = 100,
     n_trials: int = 8,
     seed: int = 42,
@@ -87,6 +88,7 @@ def _batched_window_reward(
                 [chunks[index] for index in part],
                 hand_boost_weight=hand_boost_weight,
                 rank_blend=rank_blend,
+                adaptive_rank=adaptive_rank,
             )
             _, metrics = reward(batch_scores, labels[part])
             batch_rewards.append(float(metrics["reward"]))
@@ -123,6 +125,7 @@ def _selection_reward(
         val_examples,
         hand_boost_weight=hand_boost_weight,
         rank_blend=rank_blend,
+        adaptive_rank=True,
     )
     return stability_selection_reward(
         per_date,
@@ -400,7 +403,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=Path("models/stacked.joblib"))
     parser.add_argument("--cache-dir", type=Path, default=Path("data/benchmark"))
-    parser.add_argument("--dates", type=int, default=36)
+    parser.add_argument("--dates", type=int, default=37)
     parser.add_argument("--holdout-dates", type=int, default=10)
     parser.add_argument("--refresh-cache", action="store_true")
     args = parser.parse_args()
@@ -498,6 +501,7 @@ def main() -> None:
         val_examples,
         hand_boost_weight=float(fusion["hand_boost_weight"]),
         rank_blend=float(fusion["rank_blend"]) if fusion["rank_blend"] is not None else None,
+        adaptive_rank=True,
     )
     metrics = evaluate_scores(fused_val, y_val)
     print("Fusion config:", json.dumps(fusion, indent=2))
@@ -541,6 +545,7 @@ def main() -> None:
             "hand_mix_weight": float(fusion["hand_mix_weight"]),
             "hand_boost_weight": float(fusion["hand_boost_weight"]),
             "rank_blend": fusion["rank_blend"],
+            "adaptive_rank": True,
             "iso_blend_weight": float(fusion["iso_blend_weight"]),
             "fusion_mode": str(fusion["fusion_mode"]),
             "metadata": metadata,

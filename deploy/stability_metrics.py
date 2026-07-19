@@ -39,6 +39,7 @@ def per_date_batched_rewards(
     *,
     hand_boost_weight: float = 0.0,
     rank_blend: float | None = None,
+    adaptive_rank: bool = True,
     batch_size: int = 100,
 ) -> dict[str, float]:
     """Simulate validator 100-chunk forwards separately for each release date."""
@@ -73,6 +74,7 @@ def per_date_batched_rewards(
                 [date_chunks[index] for index in part],
                 hand_boost_weight=hand_boost_weight,
                 rank_blend=rank_blend,
+                adaptive_rank=adaptive_rank,
             )
             _, metrics = reward(batch_scores, date_labels[part])
             batch_rewards.append(float(metrics["reward"]))

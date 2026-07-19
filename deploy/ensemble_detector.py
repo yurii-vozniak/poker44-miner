@@ -9,7 +9,7 @@ import joblib
 import numpy as np
 
 from deploy.features import chunk_features
-from deploy.inference_postprocess import finalize_batch_scores
+from deploy.inference_postprocess import finalize_batch_scores, hand_heuristic_boost
 
 
 class EnsembleDetector:
@@ -24,6 +24,7 @@ class EnsembleDetector:
         hand_mix_weight: float = 0.0,
         hand_boost_weight: float = 0.10,
         rank_blend: float = 0.35,
+        adaptive_rank: bool = True,
         metadata: dict[str, Any] | None = None,
         model_path: str | Path | None = None,
     ) -> None:
@@ -36,6 +37,7 @@ class EnsembleDetector:
         self.hand_mix_weight = float(hand_mix_weight)
         self.hand_boost_weight = float(hand_boost_weight)
         self.rank_blend = float(rank_blend)
+        self.adaptive_rank = bool(adaptive_rank)
         self.model_path = Path(model_path).resolve() if model_path else None
         self.metadata = dict(metadata or {})
 
@@ -79,6 +81,7 @@ class EnsembleDetector:
             hand_mix_weight=float(artifact.get("hand_mix_weight", 0.0)),
             hand_boost_weight=float(artifact.get("hand_boost_weight", 0.10)),
             rank_blend=float(artifact.get("rank_blend", 0.35)),
+            adaptive_rank=bool(artifact.get("adaptive_rank", True)),
             metadata=artifact.get("metadata"),
             model_path=model_path,
         )
@@ -88,9 +91,15 @@ class EnsembleDetector:
         return self.hybrid._supervised_probability(scaled)
 
     def _iso_signal(self, features: np.ndarray) -> np.ndarray:
-        if self.stacked.iso_forest is None:
+        signals: list[np.ndarray] = []
+        if self.stacked.iso_forest is not None:
+            signals.append(self.stacked._anomaly_probability(features))
+        scaled = self.hybrid.scaler.transform(features)
+        if self.hybrid.iso_forest is not None:
+            signals.append(self.hybrid._anomaly_probability(scaled))
+        if not signals:
             return np.zeros(features.shape[0], dtype=np.float64)
-        return self.stacked._anomaly_probability(features)
+        return np.maximum.reduce(signals)
 
     def _hand_mix_signal(self, chunks: list[list[dict]]) -> np.ndarray:
         if self.hand_mix_weight <= 0.0 or self.stacked.hand_lgbm is None:
@@ -111,6 +120,9 @@ class EnsembleDetector:
         if self.iso_weight > 0.0:
             iso_scores = self._iso_signal(features)
             fused = np.clip(np.maximum(fused, self.iso_weight * iso_scores), 0.0, 1.0)
+        heuristic = hand_heuristic_boost(chunks) if len(chunks) > 1 else None
+        if heuristic is not None and float(np.std(fused)) < 0.12:
+            fused = np.clip(np.maximum(fused, 0.22 * heuristic), 0.0, 1.0)
         if self.hand_mix_weight > 0.0:
             hand_scores = self._hand_mix_signal(chunks)
             fused = np.clip(np.maximum(fused, self.hand_mix_weight * hand_scores), 0.0, 1.0)
@@ -120,5 +132,6 @@ class EnsembleDetector:
                 chunks,
                 hand_boost_weight=self.hand_boost_weight,
                 rank_blend=self.rank_blend,
+                adaptive_rank=self.adaptive_rank,
             )
         return [round(max(0.0, min(1.0, float(score))), 6) for score in fused]

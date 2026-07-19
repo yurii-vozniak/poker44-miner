@@ -30,6 +30,7 @@ class StackedDetector:
         hand_mix_weight: float = 0.0,
         hand_boost_weight: float = 0.0,
         rank_blend: float | None = None,
+        adaptive_rank: bool = True,
         iso_blend_weight: float = 0.0,
         fusion_mode: str = "max",
         metadata: dict[str, Any] | None = None,
@@ -48,6 +49,7 @@ class StackedDetector:
         self.hand_mix_weight = float(hand_mix_weight)
         self.hand_boost_weight = float(hand_boost_weight)
         self.rank_blend = rank_blend
+        self.adaptive_rank = bool(adaptive_rank)
         self.iso_blend_weight = float(iso_blend_weight)
         self.fusion_mode = fusion_mode
         self.metadata = dict(metadata or {})
@@ -67,6 +69,7 @@ class StackedDetector:
             hand_mix_weight=float(artifact.get("hand_mix_weight", 0.0)),
             hand_boost_weight=float(artifact.get("hand_boost_weight", 0.0)),
             rank_blend=artifact.get("rank_blend"),
+            adaptive_rank=bool(artifact.get("adaptive_rank", True)),
             iso_blend_weight=float(artifact.get("iso_blend_weight", 0.0)),
             fusion_mode=str(artifact.get("fusion_mode", "max")),
             metadata=artifact.get("metadata"),
@@ -179,5 +182,6 @@ class StackedDetector:
                 chunks,
                 hand_boost_weight=self.hand_boost_weight,
                 rank_blend=self.rank_blend,
+                adaptive_rank=self.adaptive_rank,
             )
         return [round(max(0.0, min(1.0, float(score))), 6) for score in scores]
