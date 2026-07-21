@@ -17,10 +17,25 @@ def _parse_float(name: str, default: float) -> float:
         return default
 
 
+def resolve_max_pos_frac(scores: np.ndarray, base: float | None = None) -> float:
+    """Raise positive fraction when batch scores have weak separation (live OOD)."""
+    if base is None:
+        base = _parse_float("POKER44_BATCH_MAX_POS_FRAC", 0.35)
+    if scores.size <= 1:
+        return base
+    std = float(np.std(scores))
+    if std < 0.04:
+        return min(0.50, base + 0.15)
+    if std < 0.08:
+        return min(0.45, base + 0.10)
+    return base
+
+
 def apply_batch_calibration(
     scores: np.ndarray | list[float],
     *,
     max_pos_frac: float | None = None,
+    adaptive_max_pos_frac: bool = True,
     high_band: tuple[float, float] | None = None,
     low_band: tuple[float, float] | None = None,
 ) -> np.ndarray:
@@ -35,7 +50,7 @@ def apply_batch_calibration(
     zero on mixed batches.
     """
     if max_pos_frac is None:
-        max_pos_frac = _parse_float("POKER44_BATCH_MAX_POS_FRAC", 0.25)
+        max_pos_frac = _parse_float("POKER44_BATCH_MAX_POS_FRAC", 0.35)
     if high_band is None:
         high_band = (
             _parse_float("POKER44_BATCH_HIGH_LO", 0.55),
@@ -52,9 +67,15 @@ def apply_batch_calibration(
     if n <= 1:
         return np.clip(result, 0.0, 1.0)
 
+    resolved_frac = (
+        resolve_max_pos_frac(result, max_pos_frac)
+        if adaptive_max_pos_frac
+        else float(max_pos_frac if max_pos_frac is not None else 0.35)
+    )
+
     # Stable descending order; ties broken by original position.
     order = np.argsort(-result, kind="mergesort")
-    k = max(1, int(round(n * max_pos_frac)))
+    k = max(1, int(round(n * resolved_frac)))
     k = min(k, n - 1)
 
     remapped = np.empty(n, dtype=np.float64)

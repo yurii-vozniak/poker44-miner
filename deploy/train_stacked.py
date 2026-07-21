@@ -40,12 +40,12 @@ from deploy.iso_calibration import IsoCalibration, fit_iso_calibration, iso_bot_
 from poker44.score.scoring import reward
 from sklearn.ensemble import IsolationForest
 
-DEFAULT_MODEL_VERSION = "15"
+DEFAULT_MODEL_VERSION = "16"
 STABILITY_FLOOR = 0.55
 MAX_HUMAN_FPR = 0.05
 
 
-def _recency_weights(examples, *, half_life_days: float = 21.0) -> np.ndarray:
+def _recency_weights(examples, *, half_life_days: float = 14.0) -> np.ndarray:
     dates = sorted({example.source_date for example in examples})
     date_rank = {source_date: index for index, source_date in enumerate(dates)}
     max_rank = max(len(dates) - 1, 1)
@@ -64,6 +64,8 @@ def _batched_window_reward(
     hand_boost_weight: float = 0.0,
     rank_blend: float | None = None,
     adaptive_rank: bool = True,
+    max_pos_frac: float | None = None,
+    adaptive_max_pos_frac: bool = True,
     batch_size: int = 100,
     n_trials: int = 8,
     seed: int = 42,
@@ -89,6 +91,8 @@ def _batched_window_reward(
                 hand_boost_weight=hand_boost_weight,
                 rank_blend=rank_blend,
                 adaptive_rank=adaptive_rank,
+                max_pos_frac=max_pos_frac,
+                adaptive_max_pos_frac=adaptive_max_pos_frac,
             )
             _, metrics = reward(batch_scores, labels[part])
             batch_rewards.append(float(metrics["reward"]))

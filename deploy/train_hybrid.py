@@ -30,7 +30,7 @@ from deploy.features import FEATURE_NAMES, HAND_KEYS, _heuristic_score, hand_fea
 from deploy.iso_calibration import fit_iso_calibration, iso_bot_probability
 from poker44.score.scoring import reward
 
-DEFAULT_MODEL_VERSION = "12"
+DEFAULT_MODEL_VERSION = "16"
 SELECTION_WINDOW_SIZE = 200
 MAX_HUMAN_FPR = 0.05
 
@@ -43,7 +43,7 @@ def _maybe_invert_scores(y_true: np.ndarray, scores: np.ndarray) -> tuple[np.nda
     return 1.0 - scores, True
 
 
-def _recency_weights(examples, *, half_life_days: float = 21.0) -> np.ndarray:
+def _recency_weights(examples, *, half_life_days: float = 14.0) -> np.ndarray:
     dates = sorted({example.source_date for example in examples})
     date_rank = {source_date: index for index, source_date in enumerate(dates)}
     max_rank = max(len(dates) - 1, 1)

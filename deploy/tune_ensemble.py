@@ -30,7 +30,7 @@ from deploy.train_stacked import _batched_window_reward
 from poker44.score.scoring import reward
 from poker44.validator.payload_view import prepare_hand_for_miner
 
-DEFAULT_MODEL_VERSION = "15"
+DEFAULT_MODEL_VERSION = "16"
 STABILITY_FLOOR = 0.55
 
 
@@ -41,6 +41,8 @@ def _selection_reward(
     *,
     hand_boost_weight: float,
     rank_blend: float,
+    max_pos_frac: float | None,
+    adaptive_max_pos_frac: bool,
 ) -> tuple[float, dict[str, float]]:
     per_date = per_date_batched_rewards(
         scores,
@@ -49,6 +51,8 @@ def _selection_reward(
         hand_boost_weight=hand_boost_weight,
         rank_blend=rank_blend,
         adaptive_rank=True,
+        max_pos_frac=max_pos_frac,
+        adaptive_max_pos_frac=adaptive_max_pos_frac,
     )
     batch = _batched_window_reward(
         scores,
@@ -56,6 +60,8 @@ def _selection_reward(
         val_examples,
         hand_boost_weight=hand_boost_weight,
         rank_blend=rank_blend,
+        max_pos_frac=max_pos_frac,
+        adaptive_max_pos_frac=adaptive_max_pos_frac,
     )
     selection = stability_selection_reward(per_date, floor=STABILITY_FLOOR, batch_mean=batch)
     return selection, per_date
@@ -114,39 +120,45 @@ def main() -> None:
     best_per_date: dict[str, float] = {}
     for stacked_w in (0.45, 0.55, 0.65):
         hybrid_w = 1.0 - stacked_w
-        for iso_w in (0.15, 0.25, 0.35):
+        for iso_w in (0.20, 0.30, 0.40):
             for hand_mix_w in (0.0, 0.18, 0.26):
                 for hand_boost_w in (0.10, 0.14, 0.18):
-                    for rank_blend in (0.35, 0.45, 0.55):
-                        fused = np.clip(
-                            stacked_w * stacked_scores + hybrid_w * hybrid_scores,
-                            0.0,
-                            1.0,
-                        )
-                        if iso_w > 0.0:
-                            fused = np.clip(np.maximum(fused, iso_w * iso_scores), 0.0, 1.0)
-                        if hand_mix_w > 0.0:
-                            fused = np.clip(np.maximum(fused, hand_mix_w * hand_scores), 0.0, 1.0)
-                        selection, per_date = _selection_reward(
-                            fused,
-                            labels,
-                            val_examples,
-                            hand_boost_weight=hand_boost_w,
-                            rank_blend=rank_blend,
-                        )
-                        if selection > float(best["selection_reward"]):
-                            best = {
-                                "selection_reward": selection,
-                                "stacked_weight": stacked_w,
-                                "hybrid_weight": hybrid_w,
-                                "iso_weight": iso_w,
-                                "hand_mix_weight": hand_mix_w,
-                                "hand_boost_weight": hand_boost_w,
-                                "rank_blend": rank_blend,
-                                "stability": stability_summary(per_date),
-                                "meets_floor_0_55": meets_stability_floor(per_date),
-                            }
-                            best_per_date = per_date
+                    for rank_blend in (0.40, 0.50, 0.60):
+                        for max_pos_frac in (0.30, 0.35, 0.40):
+                            adaptive_max_pos_frac = True
+                            fused = np.clip(
+                                stacked_w * stacked_scores + hybrid_w * hybrid_scores,
+                                0.0,
+                                1.0,
+                            )
+                            if iso_w > 0.0:
+                                fused = np.clip(np.maximum(fused, iso_w * iso_scores), 0.0, 1.0)
+                            if hand_mix_w > 0.0:
+                                fused = np.clip(np.maximum(fused, hand_mix_w * hand_scores), 0.0, 1.0)
+                            selection, per_date = _selection_reward(
+                                fused,
+                                labels,
+                                val_examples,
+                                hand_boost_weight=hand_boost_w,
+                                rank_blend=rank_blend,
+                                max_pos_frac=max_pos_frac,
+                                adaptive_max_pos_frac=adaptive_max_pos_frac,
+                            )
+                            if selection > float(best["selection_reward"]):
+                                best = {
+                                    "selection_reward": selection,
+                                    "stacked_weight": stacked_w,
+                                    "hybrid_weight": hybrid_w,
+                                    "iso_weight": iso_w,
+                                    "hand_mix_weight": hand_mix_w,
+                                    "hand_boost_weight": hand_boost_w,
+                                    "rank_blend": rank_blend,
+                                    "max_pos_frac": max_pos_frac,
+                                    "adaptive_max_pos_frac": adaptive_max_pos_frac,
+                                    "stability": stability_summary(per_date),
+                                    "meets_floor_0_55": meets_stability_floor(per_date),
+                                }
+                                best_per_date = per_date
 
     metadata = {
         "trained_at": datetime.now(timezone.utc).isoformat(),
@@ -171,6 +183,8 @@ def main() -> None:
         "hand_mix_weight": best["hand_mix_weight"],
         "hand_boost_weight": best["hand_boost_weight"],
         "rank_blend": best["rank_blend"],
+        "max_pos_frac": best.get("max_pos_frac"),
+        "adaptive_max_pos_frac": best.get("adaptive_max_pos_frac", True),
         "adaptive_rank": True,
         "metadata": metadata,
     }

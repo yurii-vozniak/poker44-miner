@@ -87,6 +87,8 @@ def finalize_batch_scores(
     rank_blend: float | None = None,
     adaptive_rank: bool = True,
     batch_calibrate: bool = True,
+    max_pos_frac: float | None = None,
+    adaptive_max_pos_frac: bool = True,
 ) -> np.ndarray:
     result = np.asarray(scores, dtype=np.float64)
     if chunks is not None and hand_boost_weight > 0.0:
@@ -94,5 +96,9 @@ def finalize_batch_scores(
     if result.size > 1:
         result = rank_coherent_blend(result, alpha=rank_blend, adaptive=adaptive_rank)
         if batch_calibrate:
-            result = apply_batch_calibration(result)
+            result = apply_batch_calibration(
+                result,
+                max_pos_frac=max_pos_frac,
+                adaptive_max_pos_frac=adaptive_max_pos_frac,
+            )
     return np.clip(result, 0.0, 1.0)

@@ -40,6 +40,8 @@ def per_date_batched_rewards(
     hand_boost_weight: float = 0.0,
     rank_blend: float | None = None,
     adaptive_rank: bool = True,
+    max_pos_frac: float | None = None,
+    adaptive_max_pos_frac: bool = True,
     batch_size: int = 100,
 ) -> dict[str, float]:
     """Simulate validator 100-chunk forwards separately for each release date."""
@@ -75,6 +77,8 @@ def per_date_batched_rewards(
                 hand_boost_weight=hand_boost_weight,
                 rank_blend=rank_blend,
                 adaptive_rank=adaptive_rank,
+                max_pos_frac=max_pos_frac,
+                adaptive_max_pos_frac=adaptive_max_pos_frac,
             )
             _, metrics = reward(batch_scores, date_labels[part])
             batch_rewards.append(float(metrics["reward"]))
@@ -106,25 +110,38 @@ def stability_selection_reward(
     *,
     floor: float = 0.55,
     batch_mean: float | None = None,
+    recent_dates: int = 7,
 ) -> float:
     """
     Prefer configs with high worst-date score and low cross-date variance.
 
     Configs that miss the stability floor are heavily penalized so tuning
-    cannot chase a high average on one lucky date.
+    cannot chase a high average on one lucky date. Recent release dates are
+    weighted more heavily because they better match live validator rounds.
     """
     if not per_date_rewards:
         return -1.0
 
     values = np.asarray(list(per_date_rewards.values()), dtype=np.float64)
+    sorted_dates = sorted(per_date_rewards.keys())
+    recent = sorted_dates[-recent_dates:] if recent_dates > 0 else sorted_dates
+    recent_values = np.asarray([per_date_rewards[source_date] for source_date in recent], dtype=np.float64)
     min_reward = float(np.min(values))
+    min_recent = float(np.min(recent_values)) if recent_values.size else min_reward
     mean_reward = float(np.mean(values))
+    mean_recent = float(np.mean(recent_values)) if recent_values.size else mean_reward
     std_reward = float(np.std(values))
 
-    if min_reward < floor:
-        return min_reward - 1.0
+    if min_reward < floor or min_recent < floor:
+        return min(min_reward, min_recent) - 1.0
 
-    score = 0.55 * min_reward + 0.30 * mean_reward - 0.15 * std_reward
+    score = (
+        0.40 * min_recent
+        + 0.15 * min_reward
+        + 0.20 * mean_recent
+        + 0.10 * mean_reward
+        - 0.15 * std_reward
+    )
     if batch_mean is not None:
         score += 0.10 * batch_mean
     return score

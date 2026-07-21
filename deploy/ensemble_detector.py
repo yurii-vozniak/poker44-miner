@@ -25,6 +25,8 @@ class EnsembleDetector:
         hand_boost_weight: float = 0.10,
         rank_blend: float = 0.35,
         adaptive_rank: bool = True,
+        max_pos_frac: float | None = None,
+        adaptive_max_pos_frac: bool = True,
         metadata: dict[str, Any] | None = None,
         model_path: str | Path | None = None,
     ) -> None:
@@ -38,6 +40,8 @@ class EnsembleDetector:
         self.hand_boost_weight = float(hand_boost_weight)
         self.rank_blend = float(rank_blend)
         self.adaptive_rank = bool(adaptive_rank)
+        self.max_pos_frac = max_pos_frac
+        self.adaptive_max_pos_frac = bool(adaptive_max_pos_frac)
         self.model_path = Path(model_path).resolve() if model_path else None
         self.metadata = dict(metadata or {})
 
@@ -82,6 +86,8 @@ class EnsembleDetector:
             hand_boost_weight=float(artifact.get("hand_boost_weight", 0.10)),
             rank_blend=float(artifact.get("rank_blend", 0.35)),
             adaptive_rank=bool(artifact.get("adaptive_rank", True)),
+            max_pos_frac=artifact.get("max_pos_frac"),
+            adaptive_max_pos_frac=bool(artifact.get("adaptive_max_pos_frac", True)),
             metadata=artifact.get("metadata"),
             model_path=model_path,
         )
@@ -122,7 +128,7 @@ class EnsembleDetector:
             fused = np.clip(np.maximum(fused, self.iso_weight * iso_scores), 0.0, 1.0)
         heuristic = hand_heuristic_boost(chunks) if len(chunks) > 1 else None
         if heuristic is not None and float(np.std(fused)) < 0.12:
-            fused = np.clip(np.maximum(fused, 0.22 * heuristic), 0.0, 1.0)
+            fused = np.clip(np.maximum(fused, 0.28 * heuristic), 0.0, 1.0)
         if self.hand_mix_weight > 0.0:
             hand_scores = self._hand_mix_signal(chunks)
             fused = np.clip(np.maximum(fused, self.hand_mix_weight * hand_scores), 0.0, 1.0)
@@ -133,5 +139,7 @@ class EnsembleDetector:
                 hand_boost_weight=self.hand_boost_weight,
                 rank_blend=self.rank_blend,
                 adaptive_rank=self.adaptive_rank,
+                max_pos_frac=self.max_pos_frac,
+                adaptive_max_pos_frac=self.adaptive_max_pos_frac,
             )
         return [round(max(0.0, min(1.0, float(score))), 6) for score in fused]
