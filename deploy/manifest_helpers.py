@@ -44,6 +44,8 @@ def hybrid_implementation_files(repo_root: Path) -> list[Path]:
     return [
         repo_root / "neurons" / "miner_hybrid.py",
         repo_root / "deploy" / "hybrid_detector.py",
+        repo_root / "deploy" / "ensemble_detector.py",
+        repo_root / "deploy" / "inference_postprocess.py",
         repo_root / "deploy" / "features.py",
         repo_root / "deploy" / "batch_calibration.py",
         repo_root / "deploy" / "stacked_detector.py",
@@ -87,9 +89,8 @@ def build_hybrid_model_manifest(
                 "validator-only live evaluation labels or private hand histories."
             ),
             "notes": (
-                "Hybrid LightGBM classifier plus Isolation Forest anomaly detector. "
-                "Chunk scores fuse supervised and anomaly paths with stability-first "
-                "fusion tuning for v2.2 multi-round Top-10 competition scoring."
+                "Dual stacked+hybrid ensemble with live-robust rank-coherent batch "
+                "calibration for multi-round Top-10 competition scoring."
             ),
         },
     )

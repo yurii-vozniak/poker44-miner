@@ -40,7 +40,7 @@ from deploy.iso_calibration import IsoCalibration, fit_iso_calibration, iso_bot_
 from poker44.score.scoring import reward
 from sklearn.ensemble import IsolationForest
 
-DEFAULT_MODEL_VERSION = "16"
+DEFAULT_MODEL_VERSION = "17"
 STABILITY_FLOOR = 0.55
 MAX_HUMAN_FPR = 0.05
 

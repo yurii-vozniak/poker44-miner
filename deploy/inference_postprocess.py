@@ -51,14 +51,16 @@ def effective_rank_blend(
     adaptive: bool = True,
 ) -> float:
     """Increase rank weight when the batch has weak score separation (live OOD)."""
-    alpha = rank_blend if rank_blend is not None else _parse_float("POKER44_RANK_BLEND", 0.25)
+    alpha = rank_blend if rank_blend is not None else _parse_float("POKER44_RANK_BLEND", 0.45)
     if not adaptive or scores.size <= 1:
         return alpha
     std = float(np.std(scores))
+    if std < 0.04:
+        return min(0.82, alpha + 0.40)
     if std < 0.06:
-        return min(0.70, alpha + 0.35)
-    if std < 0.12:
-        return min(0.55, alpha + 0.20)
+        return min(0.75, alpha + 0.30)
+    if std < 0.10:
+        return min(0.65, alpha + 0.18)
     return alpha
 
 

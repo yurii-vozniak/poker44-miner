@@ -9,7 +9,11 @@ import joblib
 import numpy as np
 
 from deploy.features import chunk_features
-from deploy.inference_postprocess import finalize_batch_scores, hand_heuristic_boost
+from deploy.inference_postprocess import (
+    finalize_batch_scores,
+    hand_heuristic_boost,
+    rank_coherent_blend,
+)
 
 
 class EnsembleDetector:
@@ -127,8 +131,10 @@ class EnsembleDetector:
             iso_scores = self._iso_signal(features)
             fused = np.clip(np.maximum(fused, self.iso_weight * iso_scores), 0.0, 1.0)
         heuristic = hand_heuristic_boost(chunks) if len(chunks) > 1 else None
-        if heuristic is not None and float(np.std(fused)) < 0.12:
-            fused = np.clip(np.maximum(fused, 0.28 * heuristic), 0.0, 1.0)
+        if heuristic is not None and float(np.std(fused)) < 0.10:
+            fused = np.clip(np.maximum(fused, 0.35 * heuristic), 0.0, 1.0)
+        if len(fused) > 1 and float(np.std(fused)) < 0.04:
+            fused = rank_coherent_blend(fused, alpha=0.85, adaptive=False)
         if self.hand_mix_weight > 0.0:
             hand_scores = self._hand_mix_signal(chunks)
             fused = np.clip(np.maximum(fused, self.hand_mix_weight * hand_scores), 0.0, 1.0)

@@ -30,7 +30,7 @@ from deploy.train_stacked import _batched_window_reward
 from poker44.score.scoring import reward
 from poker44.validator.payload_view import prepare_hand_for_miner
 
-DEFAULT_MODEL_VERSION = "16"
+DEFAULT_MODEL_VERSION = "17"
 STABILITY_FLOOR = 0.55
 
 
@@ -120,11 +120,11 @@ def main() -> None:
     best_per_date: dict[str, float] = {}
     for stacked_w in (0.45, 0.55, 0.65):
         hybrid_w = 1.0 - stacked_w
-        for iso_w in (0.20, 0.30, 0.40):
-            for hand_mix_w in (0.0, 0.18, 0.26):
-                for hand_boost_w in (0.10, 0.14, 0.18):
-                    for rank_blend in (0.40, 0.50, 0.60):
-                        for max_pos_frac in (0.30, 0.35, 0.40):
+        for iso_w in (0.30, 0.40):
+            for hand_mix_w in (0.0, 0.22):
+                for hand_boost_w in (0.12, 0.16):
+                    for rank_blend in (0.55, 0.65):
+                        for max_pos_frac in (0.42, 0.48):
                             adaptive_max_pos_frac = True
                             fused = np.clip(
                                 stacked_w * stacked_scores + hybrid_w * hybrid_scores,
