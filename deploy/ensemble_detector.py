@@ -9,11 +9,8 @@ import joblib
 import numpy as np
 
 from deploy.features import chunk_features
-from deploy.inference_postprocess import (
-    finalize_batch_scores,
-    hand_heuristic_boost,
-    rank_coherent_blend,
-)
+from deploy.live_rank_fusion import apply_batch_ensemble_fusion
+from deploy.inference_postprocess import finalize_batch_scores
 
 
 class EnsembleDetector:
@@ -31,6 +28,7 @@ class EnsembleDetector:
         adaptive_rank: bool = True,
         max_pos_frac: float | None = None,
         adaptive_max_pos_frac: bool = True,
+        live_rank_weight: float = 0.55,
         metadata: dict[str, Any] | None = None,
         model_path: str | Path | None = None,
     ) -> None:
@@ -46,6 +44,7 @@ class EnsembleDetector:
         self.adaptive_rank = bool(adaptive_rank)
         self.max_pos_frac = max_pos_frac
         self.adaptive_max_pos_frac = bool(adaptive_max_pos_frac)
+        self.live_rank_weight = float(live_rank_weight)
         self.model_path = Path(model_path).resolve() if model_path else None
         self.metadata = dict(metadata or {})
 
@@ -92,6 +91,7 @@ class EnsembleDetector:
             adaptive_rank=bool(artifact.get("adaptive_rank", True)),
             max_pos_frac=artifact.get("max_pos_frac"),
             adaptive_max_pos_frac=bool(artifact.get("adaptive_max_pos_frac", True)),
+            live_rank_weight=float(artifact.get("live_rank_weight", 0.55)),
             metadata=artifact.get("metadata"),
             model_path=model_path,
         )
@@ -130,14 +130,22 @@ class EnsembleDetector:
         if self.iso_weight > 0.0:
             iso_scores = self._iso_signal(features)
             fused = np.clip(np.maximum(fused, self.iso_weight * iso_scores), 0.0, 1.0)
-        heuristic = hand_heuristic_boost(chunks) if len(chunks) > 1 else None
-        if heuristic is not None and float(np.std(fused)) < 0.10:
-            fused = np.clip(np.maximum(fused, 0.35 * heuristic), 0.0, 1.0)
-        if len(fused) > 1 and float(np.std(fused)) < 0.04:
-            fused = rank_coherent_blend(fused, alpha=0.85, adaptive=False)
-        if self.hand_mix_weight > 0.0:
-            hand_scores = self._hand_mix_signal(chunks)
-            fused = np.clip(np.maximum(fused, self.hand_mix_weight * hand_scores), 0.0, 1.0)
+        else:
+            iso_scores = np.zeros(len(chunks), dtype=np.float64)
+        hand_rank = (
+            self.stacked._hand_aggregate_for_chunks(chunks)
+            if self.stacked.hand_lgbm is not None
+            else np.zeros(len(chunks), dtype=np.float64)
+        )
+        if len(fused) > 1:
+            fused = apply_batch_ensemble_fusion(
+                fused,
+                chunks,
+                iso_scores=iso_scores,
+                hand_scores=hand_rank,
+                hand_mix_weight=self.hand_mix_weight,
+                live_rank_weight=self.live_rank_weight,
+            )
         if len(fused) > 1:
             fused = finalize_batch_scores(
                 fused,

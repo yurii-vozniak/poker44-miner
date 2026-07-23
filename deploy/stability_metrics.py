@@ -8,6 +8,7 @@ import numpy as np
 
 from deploy.eval_metrics import evaluate_scores
 from deploy.inference_postprocess import finalize_batch_scores
+from deploy.live_rank_fusion import apply_batch_ensemble_fusion
 from poker44.score.scoring import reward
 
 
@@ -43,6 +44,10 @@ def per_date_batched_rewards(
     max_pos_frac: float | None = None,
     adaptive_max_pos_frac: bool = True,
     batch_size: int = 100,
+    iso_scores: np.ndarray | None = None,
+    hand_scores: np.ndarray | None = None,
+    hand_mix_weight: float = 0.0,
+    live_rank_weight: float = 0.0,
 ) -> dict[str, float]:
     """Simulate validator 100-chunk forwards separately for each release date."""
     labels = np.asarray(y_true, dtype=int)
@@ -71,9 +76,29 @@ def per_date_batched_rewards(
             part = np.arange(start, min(start + batch_size, indices.size))
             if part.size < 20:
                 continue
+            batch_chunks = [date_chunks[index] for index in part]
+            batch_base = date_values[part]
+            batch_iso = (
+                np.asarray(iso_scores, dtype=np.float64)[indices[part]]
+                if iso_scores is not None and iso_scores.size == values.size
+                else np.zeros(part.size, dtype=np.float64)
+            )
+            batch_hand = (
+                np.asarray(hand_scores, dtype=np.float64)[indices[part]]
+                if hand_scores is not None and hand_scores.size == values.size
+                else np.zeros(part.size, dtype=np.float64)
+            )
+            batch_base = apply_batch_ensemble_fusion(
+                batch_base,
+                batch_chunks,
+                iso_scores=batch_iso,
+                hand_scores=batch_hand,
+                hand_mix_weight=hand_mix_weight,
+                live_rank_weight=live_rank_weight,
+            )
             batch_scores = finalize_batch_scores(
-                date_values[part],
-                [date_chunks[index] for index in part],
+                batch_base,
+                batch_chunks,
                 hand_boost_weight=hand_boost_weight,
                 rank_blend=rank_blend,
                 adaptive_rank=adaptive_rank,
@@ -136,10 +161,10 @@ def stability_selection_reward(
         return min(min_reward, min_recent) - 1.0
 
     score = (
-        0.40 * min_recent
-        + 0.15 * min_reward
+        0.50 * min_recent
+        + 0.10 * min_reward
         + 0.20 * mean_recent
-        + 0.10 * mean_reward
+        + 0.05 * mean_reward
         - 0.15 * std_reward
     )
     if batch_mean is not None:

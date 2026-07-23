@@ -46,6 +46,7 @@ def hybrid_implementation_files(repo_root: Path) -> list[Path]:
         repo_root / "deploy" / "hybrid_detector.py",
         repo_root / "deploy" / "ensemble_detector.py",
         repo_root / "deploy" / "inference_postprocess.py",
+        repo_root / "deploy" / "live_rank_fusion.py",
         repo_root / "deploy" / "features.py",
         repo_root / "deploy" / "batch_calibration.py",
         repo_root / "deploy" / "stacked_detector.py",
@@ -89,8 +90,8 @@ def build_hybrid_model_manifest(
                 "validator-only live evaluation labels or private hand histories."
             ),
             "notes": (
-                "Dual stacked+hybrid ensemble with live-robust rank-coherent batch "
-                "calibration for multi-round Top-10 competition scoring."
+                "Dual stacked+hybrid ensemble with live rank-first batch fusion "
+                "and rank-coherent calibration for multi-round Top-10 scoring."
             ),
         },
     )

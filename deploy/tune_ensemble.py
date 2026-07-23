@@ -27,10 +27,9 @@ from deploy.stability_metrics import (
     stability_summary,
 )
 from deploy.train_stacked import _batched_window_reward
-from poker44.score.scoring import reward
 from poker44.validator.payload_view import prepare_hand_for_miner
 
-DEFAULT_MODEL_VERSION = "17"
+DEFAULT_MODEL_VERSION = "18"
 STABILITY_FLOOR = 0.55
 
 
@@ -39,7 +38,11 @@ def _selection_reward(
     labels: np.ndarray,
     val_examples,
     *,
+    iso_scores: np.ndarray,
+    hand_scores: np.ndarray,
     hand_boost_weight: float,
+    hand_mix_weight: float,
+    live_rank_weight: float,
     rank_blend: float,
     max_pos_frac: float | None,
     adaptive_max_pos_frac: bool,
@@ -53,6 +56,10 @@ def _selection_reward(
         adaptive_rank=True,
         max_pos_frac=max_pos_frac,
         adaptive_max_pos_frac=adaptive_max_pos_frac,
+        iso_scores=iso_scores,
+        hand_scores=hand_scores,
+        hand_mix_weight=hand_mix_weight,
+        live_rank_weight=live_rank_weight,
     )
     batch = _batched_window_reward(
         scores,
@@ -62,8 +69,17 @@ def _selection_reward(
         rank_blend=rank_blend,
         max_pos_frac=max_pos_frac,
         adaptive_max_pos_frac=adaptive_max_pos_frac,
+        iso_scores=iso_scores,
+        hand_scores=hand_scores,
+        hand_mix_weight=hand_mix_weight,
+        live_rank_weight=live_rank_weight,
     )
-    selection = stability_selection_reward(per_date, floor=STABILITY_FLOOR, batch_mean=batch)
+    selection = stability_selection_reward(
+        per_date,
+        floor=STABILITY_FLOOR,
+        batch_mean=batch,
+        recent_dates=5,
+    )
     return selection, per_date
 
 
@@ -118,53 +134,61 @@ def main() -> None:
 
     best: dict[str, float | dict] = {"selection_reward": -2.0}
     best_per_date: dict[str, float] = {}
-    for stacked_w in (0.45, 0.55, 0.65):
+    for stacked_w in (0.55, 0.65):
         hybrid_w = 1.0 - stacked_w
-        for iso_w in (0.30, 0.40):
-            for hand_mix_w in (0.0, 0.22):
-                for hand_boost_w in (0.12, 0.16):
-                    for rank_blend in (0.55, 0.65):
-                        for max_pos_frac in (0.42, 0.48):
-                            adaptive_max_pos_frac = True
-                            fused = np.clip(
-                                stacked_w * stacked_scores + hybrid_w * hybrid_scores,
-                                0.0,
-                                1.0,
-                            )
-                            if iso_w > 0.0:
-                                fused = np.clip(np.maximum(fused, iso_w * iso_scores), 0.0, 1.0)
-                            if hand_mix_w > 0.0:
-                                fused = np.clip(np.maximum(fused, hand_mix_w * hand_scores), 0.0, 1.0)
-                            selection, per_date = _selection_reward(
-                                fused,
-                                labels,
-                                val_examples,
-                                hand_boost_weight=hand_boost_w,
-                                rank_blend=rank_blend,
-                                max_pos_frac=max_pos_frac,
-                                adaptive_max_pos_frac=adaptive_max_pos_frac,
-                            )
-                            if selection > float(best["selection_reward"]):
-                                best = {
-                                    "selection_reward": selection,
-                                    "stacked_weight": stacked_w,
-                                    "hybrid_weight": hybrid_w,
-                                    "iso_weight": iso_w,
-                                    "hand_mix_weight": hand_mix_w,
-                                    "hand_boost_weight": hand_boost_w,
-                                    "rank_blend": rank_blend,
-                                    "max_pos_frac": max_pos_frac,
-                                    "adaptive_max_pos_frac": adaptive_max_pos_frac,
-                                    "stability": stability_summary(per_date),
-                                    "meets_floor_0_55": meets_stability_floor(per_date),
-                                }
-                                best_per_date = per_date
+        for iso_w in (0.40, 0.45):
+            for hand_mix_w in (0.22, 0.26):
+                for live_rank_w in (0.70, 0.82):
+                    for hand_boost_w in (0.16,):
+                        for rank_blend in (0.65, 0.72):
+                            for max_pos_frac in (0.48, 0.52):
+                                adaptive_max_pos_frac = True
+                                fused = np.clip(
+                                    stacked_w * stacked_scores + hybrid_w * hybrid_scores,
+                                    0.0,
+                                    1.0,
+                                )
+                                if iso_w > 0.0:
+                                    fused = np.clip(
+                                        np.maximum(fused, iso_w * iso_scores),
+                                        0.0,
+                                        1.0,
+                                    )
+                                selection, per_date = _selection_reward(
+                                    fused,
+                                    labels,
+                                    val_examples,
+                                    iso_scores=iso_scores,
+                                    hand_scores=hand_scores,
+                                    hand_boost_weight=hand_boost_w,
+                                    hand_mix_weight=hand_mix_w,
+                                    live_rank_weight=live_rank_w,
+                                    rank_blend=rank_blend,
+                                    max_pos_frac=max_pos_frac,
+                                    adaptive_max_pos_frac=adaptive_max_pos_frac,
+                                )
+                                if selection > float(best["selection_reward"]):
+                                    best = {
+                                        "selection_reward": selection,
+                                        "stacked_weight": stacked_w,
+                                        "hybrid_weight": hybrid_w,
+                                        "iso_weight": iso_w,
+                                        "hand_mix_weight": hand_mix_w,
+                                        "live_rank_weight": live_rank_w,
+                                        "hand_boost_weight": hand_boost_w,
+                                        "rank_blend": rank_blend,
+                                        "max_pos_frac": max_pos_frac,
+                                        "adaptive_max_pos_frac": adaptive_max_pos_frac,
+                                        "stability": stability_summary(per_date),
+                                        "meets_floor_0_55": meets_stability_floor(per_date),
+                                    }
+                                    best_per_date = per_date
 
     metadata = {
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "model_name": "poker44-dual-ensemble",
         "model_version": DEFAULT_MODEL_VERSION,
-        "framework": "stacked+hybrid+iso",
+        "framework": "stacked+hybrid+iso+live-rank",
         "validation_rows": len(val_examples),
         "selection_reward": best["selection_reward"],
         "fusion": {k: v for k, v in best.items() if k != "selection_reward"},
@@ -181,6 +205,7 @@ def main() -> None:
         "hybrid_weight": best["hybrid_weight"],
         "iso_weight": best["iso_weight"],
         "hand_mix_weight": best["hand_mix_weight"],
+        "live_rank_weight": best["live_rank_weight"],
         "hand_boost_weight": best["hand_boost_weight"],
         "rank_blend": best["rank_blend"],
         "max_pos_frac": best.get("max_pos_frac"),

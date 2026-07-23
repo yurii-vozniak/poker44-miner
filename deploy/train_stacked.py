@@ -20,6 +20,7 @@ from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 
 from deploy.inference_postprocess import finalize_batch_scores
+from deploy.live_rank_fusion import apply_batch_ensemble_fusion
 from deploy.benchmark_client import BenchmarkClient
 from deploy.benchmark_dataset import (
     download_releases,
@@ -40,7 +41,7 @@ from deploy.iso_calibration import IsoCalibration, fit_iso_calibration, iso_bot_
 from poker44.score.scoring import reward
 from sklearn.ensemble import IsolationForest
 
-DEFAULT_MODEL_VERSION = "17"
+DEFAULT_MODEL_VERSION = "18"
 STABILITY_FLOOR = 0.55
 MAX_HUMAN_FPR = 0.05
 
@@ -69,6 +70,10 @@ def _batched_window_reward(
     batch_size: int = 100,
     n_trials: int = 8,
     seed: int = 42,
+    iso_scores: np.ndarray | None = None,
+    hand_scores: np.ndarray | None = None,
+    hand_mix_weight: float = 0.0,
+    live_rank_weight: float = 0.0,
 ) -> float | None:
     labels = np.asarray(y_true, dtype=int)
     values = np.asarray(scores, dtype=float)
@@ -85,9 +90,29 @@ def _batched_window_reward(
             part = order[start : start + batch_size]
             if part.size < 20:
                 continue
+            batch_chunks = [chunks[index] for index in part]
+            batch_base = values[part]
+            batch_iso = (
+                np.asarray(iso_scores, dtype=np.float64)[part]
+                if iso_scores is not None and iso_scores.size == values.size
+                else np.zeros(part.size, dtype=np.float64)
+            )
+            batch_hand = (
+                np.asarray(hand_scores, dtype=np.float64)[part]
+                if hand_scores is not None and hand_scores.size == values.size
+                else np.zeros(part.size, dtype=np.float64)
+            )
+            batch_base = apply_batch_ensemble_fusion(
+                batch_base,
+                batch_chunks,
+                iso_scores=batch_iso,
+                hand_scores=batch_hand,
+                hand_mix_weight=hand_mix_weight,
+                live_rank_weight=live_rank_weight,
+            )
             batch_scores = finalize_batch_scores(
-                values[part],
-                [chunks[index] for index in part],
+                batch_base,
+                batch_chunks,
                 hand_boost_weight=hand_boost_weight,
                 rank_blend=rank_blend,
                 adaptive_rank=adaptive_rank,
