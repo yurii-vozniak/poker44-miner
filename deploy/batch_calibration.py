@@ -25,9 +25,9 @@ def resolve_max_pos_frac(scores: np.ndarray, base: float | None = None) -> float
         return base
     std = float(np.std(scores))
     if std < 0.04:
-        return min(0.52, base + 0.18)
+        return min(0.55, base + 0.20)
     if std < 0.08:
-        return min(0.48, base + 0.12)
+        return min(0.52, base + 0.14)
     return base
 
 

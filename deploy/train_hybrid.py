@@ -30,7 +30,7 @@ from deploy.features import FEATURE_NAMES, HAND_KEYS, _heuristic_score, hand_fea
 from deploy.iso_calibration import fit_iso_calibration, iso_bot_probability
 from poker44.score.scoring import reward
 
-DEFAULT_MODEL_VERSION = "18"
+DEFAULT_MODEL_VERSION = "19"
 SELECTION_WINDOW_SIZE = 200
 MAX_HUMAN_FPR = 0.05
 

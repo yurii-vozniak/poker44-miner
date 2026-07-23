@@ -41,7 +41,7 @@ from deploy.iso_calibration import IsoCalibration, fit_iso_calibration, iso_bot_
 from poker44.score.scoring import reward
 from sklearn.ensemble import IsolationForest
 
-DEFAULT_MODEL_VERSION = "18"
+DEFAULT_MODEL_VERSION = "19"
 STABILITY_FLOOR = 0.55
 MAX_HUMAN_FPR = 0.05
 
@@ -74,6 +74,9 @@ def _batched_window_reward(
     hand_scores: np.ndarray | None = None,
     hand_mix_weight: float = 0.0,
     live_rank_weight: float = 0.0,
+    benchmark_supervised_weight: float = 0.0,
+    stacked_scores: np.ndarray | None = None,
+    hybrid_scores: np.ndarray | None = None,
 ) -> float | None:
     labels = np.asarray(y_true, dtype=int)
     values = np.asarray(scores, dtype=float)
@@ -107,8 +110,19 @@ def _batched_window_reward(
                 batch_chunks,
                 iso_scores=batch_iso,
                 hand_scores=batch_hand,
+                stacked_scores=(
+                    np.asarray(stacked_scores, dtype=np.float64)[part]
+                    if stacked_scores is not None and stacked_scores.size == values.size
+                    else None
+                ),
+                hybrid_scores=(
+                    np.asarray(hybrid_scores, dtype=np.float64)[part]
+                    if hybrid_scores is not None and hybrid_scores.size == values.size
+                    else None
+                ),
                 hand_mix_weight=hand_mix_weight,
                 live_rank_weight=live_rank_weight,
+                benchmark_supervised_weight=benchmark_supervised_weight,
             )
             batch_scores = finalize_batch_scores(
                 batch_base,

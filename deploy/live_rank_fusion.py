@@ -60,14 +60,40 @@ def apply_live_rank_fusion(
     return np.clip((1.0 - resolved) * base + resolved * ranks, 0.0, 1.0)
 
 
+def benchmark_supervised_rank_fusion(
+    *,
+    iso_scores: np.ndarray,
+    stacked_scores: np.ndarray,
+    hybrid_scores: np.ndarray,
+    hand_scores: np.ndarray,
+    heuristic: np.ndarray | None = None,
+) -> np.ndarray:
+    """Pure rank blend of anomaly/heuristic/hand signals (top live-miner style)."""
+    components = [
+        np.asarray(iso_scores, dtype=np.float64),
+        np.asarray(stacked_scores, dtype=np.float64),
+        np.asarray(hybrid_scores, dtype=np.float64),
+        np.asarray(hand_scores, dtype=np.float64),
+    ]
+    if heuristic is not None and heuristic.size:
+        components.append(np.asarray(heuristic, dtype=np.float64))
+    return multi_signal_rank_scores(
+        *components,
+        weights=(0.30, 0.18, 0.18, 0.18, 0.16),
+    )
+
+
 def apply_batch_ensemble_fusion(
     fused: np.ndarray,
     chunks: list[list[dict]],
     *,
     iso_scores: np.ndarray,
     hand_scores: np.ndarray | None = None,
+    stacked_scores: np.ndarray | None = None,
+    hybrid_scores: np.ndarray | None = None,
     hand_mix_weight: float = 0.0,
     live_rank_weight: float = 0.0,
+    benchmark_supervised_weight: float = 0.0,
     heuristic_fn: Callable[[list[list[dict]]], np.ndarray] = hand_heuristic_boost,
 ) -> np.ndarray:
     """Apply heuristic + live-rank fusion before finalize_batch_scores."""
@@ -76,14 +102,31 @@ def apply_batch_ensemble_fusion(
         return scores
 
     heuristic = heuristic_fn(chunks) if scores.size > 1 else None
-    if heuristic is not None and float(np.std(scores)) < 0.10:
-        scores = np.clip(np.maximum(scores, 0.38 * heuristic), 0.0, 1.0)
+    batch_std = float(np.std(scores))
+    if heuristic is not None and batch_std < 0.14:
+        scores = np.clip(np.maximum(scores, 0.42 * heuristic), 0.0, 1.0)
 
     hand_rank = (
         np.asarray(hand_scores, dtype=np.float64)
         if hand_scores is not None and hand_scores.size == scores.size
         else np.zeros(scores.size, dtype=np.float64)
     )
+
+    if benchmark_supervised_weight > 0.0 and stacked_scores is not None and hybrid_scores is not None:
+        rank_supervised = benchmark_supervised_rank_fusion(
+            iso_scores=iso_scores,
+            stacked_scores=stacked_scores,
+            hybrid_scores=hybrid_scores,
+            hand_scores=hand_rank,
+            heuristic=heuristic,
+        )
+        scores = apply_live_rank_fusion(
+            scores,
+            rank_supervised,
+            weight=benchmark_supervised_weight,
+            batch_std=batch_std,
+        )
+
     if live_rank_weight > 0.0:
         rank_inputs = [scores, np.asarray(iso_scores, dtype=np.float64)]
         if heuristic is not None:

@@ -48,6 +48,9 @@ def per_date_batched_rewards(
     hand_scores: np.ndarray | None = None,
     hand_mix_weight: float = 0.0,
     live_rank_weight: float = 0.0,
+    benchmark_supervised_weight: float = 0.0,
+    stacked_scores: np.ndarray | None = None,
+    hybrid_scores: np.ndarray | None = None,
 ) -> dict[str, float]:
     """Simulate validator 100-chunk forwards separately for each release date."""
     labels = np.asarray(y_true, dtype=int)
@@ -93,8 +96,19 @@ def per_date_batched_rewards(
                 batch_chunks,
                 iso_scores=batch_iso,
                 hand_scores=batch_hand,
+                stacked_scores=(
+                    np.asarray(stacked_scores, dtype=np.float64)[indices[part]]
+                    if stacked_scores is not None and stacked_scores.size == values.size
+                    else None
+                ),
+                hybrid_scores=(
+                    np.asarray(hybrid_scores, dtype=np.float64)[indices[part]]
+                    if hybrid_scores is not None and hybrid_scores.size == values.size
+                    else None
+                ),
                 hand_mix_weight=hand_mix_weight,
                 live_rank_weight=live_rank_weight,
+                benchmark_supervised_weight=benchmark_supervised_weight,
             )
             batch_scores = finalize_batch_scores(
                 batch_base,
@@ -109,7 +123,10 @@ def per_date_batched_rewards(
             batch_rewards.append(float(metrics["reward"]))
 
         if batch_rewards:
-            rewards[source_date] = float(np.mean(batch_rewards))
+            # Conservative proxy for round stability: worst batch dominates.
+            rewards[source_date] = float(
+                0.65 * np.min(batch_rewards) + 0.35 * np.mean(batch_rewards)
+            )
     return rewards
 
 

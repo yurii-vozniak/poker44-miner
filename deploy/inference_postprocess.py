@@ -56,11 +56,11 @@ def effective_rank_blend(
         return alpha
     std = float(np.std(scores))
     if std < 0.04:
-        return min(0.82, alpha + 0.40)
+        return min(0.88, alpha + 0.45)
     if std < 0.06:
-        return min(0.75, alpha + 0.30)
+        return min(0.82, alpha + 0.35)
     if std < 0.10:
-        return min(0.65, alpha + 0.18)
+        return min(0.75, alpha + 0.22)
     return alpha
 
 

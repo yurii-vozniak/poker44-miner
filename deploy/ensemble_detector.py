@@ -29,6 +29,7 @@ class EnsembleDetector:
         max_pos_frac: float | None = None,
         adaptive_max_pos_frac: bool = True,
         live_rank_weight: float = 0.55,
+        benchmark_supervised_weight: float = 0.0,
         metadata: dict[str, Any] | None = None,
         model_path: str | Path | None = None,
     ) -> None:
@@ -45,6 +46,7 @@ class EnsembleDetector:
         self.max_pos_frac = max_pos_frac
         self.adaptive_max_pos_frac = bool(adaptive_max_pos_frac)
         self.live_rank_weight = float(live_rank_weight)
+        self.benchmark_supervised_weight = float(benchmark_supervised_weight)
         self.model_path = Path(model_path).resolve() if model_path else None
         self.metadata = dict(metadata or {})
 
@@ -92,6 +94,7 @@ class EnsembleDetector:
             max_pos_frac=artifact.get("max_pos_frac"),
             adaptive_max_pos_frac=bool(artifact.get("adaptive_max_pos_frac", True)),
             live_rank_weight=float(artifact.get("live_rank_weight", 0.55)),
+            benchmark_supervised_weight=float(artifact.get("benchmark_supervised_weight", 0.0)),
             metadata=artifact.get("metadata"),
             model_path=model_path,
         )
@@ -143,8 +146,11 @@ class EnsembleDetector:
                 chunks,
                 iso_scores=iso_scores,
                 hand_scores=hand_rank,
+                stacked_scores=stacked_scores,
+                hybrid_scores=hybrid_scores,
                 hand_mix_weight=self.hand_mix_weight,
                 live_rank_weight=self.live_rank_weight,
+                benchmark_supervised_weight=self.benchmark_supervised_weight,
             )
         if len(fused) > 1:
             fused = finalize_batch_scores(
