@@ -67,6 +67,7 @@ def benchmark_supervised_rank_fusion(
     hybrid_scores: np.ndarray,
     hand_scores: np.ndarray,
     heuristic: np.ndarray | None = None,
+    weights: tuple[float, ...] | None = None,
 ) -> np.ndarray:
     """Pure rank blend of anomaly/heuristic/hand signals (top live-miner style)."""
     components = [
@@ -77,9 +78,33 @@ def benchmark_supervised_rank_fusion(
     ]
     if heuristic is not None and heuristic.size:
         components.append(np.asarray(heuristic, dtype=np.float64))
-    return multi_signal_rank_scores(
-        *components,
-        weights=(0.30, 0.18, 0.18, 0.18, 0.16),
+    default_weights = (0.30, 0.18, 0.18, 0.18, 0.16)
+    if weights is None:
+        resolved = default_weights[: len(components)]
+    else:
+        resolved = weights[: len(components)]
+    return multi_signal_rank_scores(*components, weights=resolved)
+
+
+def build_rank_only_batch_scores(
+    chunks: list[list[dict]],
+    *,
+    iso_scores: np.ndarray,
+    stacked_scores: np.ndarray,
+    hybrid_scores: np.ndarray,
+    hand_scores: np.ndarray,
+    rank_signal_weights: tuple[float, ...] | None = None,
+    heuristic_fn: Callable[[list[list[dict]]], np.ndarray] = hand_heuristic_boost,
+) -> np.ndarray:
+    """Score a validator batch using only rank-fused signals (no probability blend)."""
+    heuristic = heuristic_fn(chunks) if len(chunks) > 1 else None
+    return benchmark_supervised_rank_fusion(
+        iso_scores=iso_scores,
+        stacked_scores=stacked_scores,
+        hybrid_scores=hybrid_scores,
+        hand_scores=hand_scores,
+        heuristic=heuristic,
+        weights=rank_signal_weights,
     )
 
 

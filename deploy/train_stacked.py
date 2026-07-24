@@ -77,6 +77,7 @@ def _batched_window_reward(
     benchmark_supervised_weight: float = 0.0,
     stacked_scores: np.ndarray | None = None,
     hybrid_scores: np.ndarray | None = None,
+    skip_pre_finalize_fusion: bool = False,
 ) -> float | None:
     labels = np.asarray(y_true, dtype=int)
     values = np.asarray(scores, dtype=float)
@@ -95,35 +96,36 @@ def _batched_window_reward(
                 continue
             batch_chunks = [chunks[index] for index in part]
             batch_base = values[part]
-            batch_iso = (
-                np.asarray(iso_scores, dtype=np.float64)[part]
-                if iso_scores is not None and iso_scores.size == values.size
-                else np.zeros(part.size, dtype=np.float64)
-            )
-            batch_hand = (
-                np.asarray(hand_scores, dtype=np.float64)[part]
-                if hand_scores is not None and hand_scores.size == values.size
-                else np.zeros(part.size, dtype=np.float64)
-            )
-            batch_base = apply_batch_ensemble_fusion(
-                batch_base,
-                batch_chunks,
-                iso_scores=batch_iso,
-                hand_scores=batch_hand,
-                stacked_scores=(
-                    np.asarray(stacked_scores, dtype=np.float64)[part]
-                    if stacked_scores is not None and stacked_scores.size == values.size
-                    else None
-                ),
-                hybrid_scores=(
-                    np.asarray(hybrid_scores, dtype=np.float64)[part]
-                    if hybrid_scores is not None and hybrid_scores.size == values.size
-                    else None
-                ),
-                hand_mix_weight=hand_mix_weight,
-                live_rank_weight=live_rank_weight,
-                benchmark_supervised_weight=benchmark_supervised_weight,
-            )
+            if not skip_pre_finalize_fusion:
+                batch_iso = (
+                    np.asarray(iso_scores, dtype=np.float64)[part]
+                    if iso_scores is not None and iso_scores.size == values.size
+                    else np.zeros(part.size, dtype=np.float64)
+                )
+                batch_hand = (
+                    np.asarray(hand_scores, dtype=np.float64)[part]
+                    if hand_scores is not None and hand_scores.size == values.size
+                    else np.zeros(part.size, dtype=np.float64)
+                )
+                batch_base = apply_batch_ensemble_fusion(
+                    batch_base,
+                    batch_chunks,
+                    iso_scores=batch_iso,
+                    hand_scores=batch_hand,
+                    stacked_scores=(
+                        np.asarray(stacked_scores, dtype=np.float64)[part]
+                        if stacked_scores is not None and stacked_scores.size == values.size
+                        else None
+                    ),
+                    hybrid_scores=(
+                        np.asarray(hybrid_scores, dtype=np.float64)[part]
+                        if hybrid_scores is not None and hybrid_scores.size == values.size
+                        else None
+                    ),
+                    hand_mix_weight=hand_mix_weight,
+                    live_rank_weight=live_rank_weight,
+                    benchmark_supervised_weight=benchmark_supervised_weight,
+                )
             batch_scores = finalize_batch_scores(
                 batch_base,
                 batch_chunks,

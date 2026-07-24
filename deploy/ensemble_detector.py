@@ -9,8 +9,8 @@ import joblib
 import numpy as np
 
 from deploy.features import chunk_features
-from deploy.live_rank_fusion import apply_batch_ensemble_fusion
 from deploy.inference_postprocess import finalize_batch_scores
+from deploy.live_rank_fusion import apply_batch_ensemble_fusion, build_rank_only_batch_scores
 
 
 class EnsembleDetector:
@@ -30,6 +30,8 @@ class EnsembleDetector:
         adaptive_max_pos_frac: bool = True,
         live_rank_weight: float = 0.55,
         benchmark_supervised_weight: float = 0.0,
+        rank_only: bool = False,
+        rank_signal_weights: tuple[float, ...] | None = None,
         metadata: dict[str, Any] | None = None,
         model_path: str | Path | None = None,
     ) -> None:
@@ -47,6 +49,8 @@ class EnsembleDetector:
         self.adaptive_max_pos_frac = bool(adaptive_max_pos_frac)
         self.live_rank_weight = float(live_rank_weight)
         self.benchmark_supervised_weight = float(benchmark_supervised_weight)
+        self.rank_only = bool(rank_only)
+        self.rank_signal_weights = rank_signal_weights
         self.model_path = Path(model_path).resolve() if model_path else None
         self.metadata = dict(metadata or {})
 
@@ -81,6 +85,8 @@ class EnsembleDetector:
 
         stacked = load_chunk_detector(stacked_path)
         hybrid = load_chunk_detector(hybrid_path)
+        raw_weights = artifact.get("rank_signal_weights")
+        rank_signal_weights = tuple(float(value) for value in raw_weights) if raw_weights else None
         return cls(
             stacked=stacked,
             hybrid=hybrid,
@@ -95,6 +101,8 @@ class EnsembleDetector:
             adaptive_max_pos_frac=bool(artifact.get("adaptive_max_pos_frac", True)),
             live_rank_weight=float(artifact.get("live_rank_weight", 0.55)),
             benchmark_supervised_weight=float(artifact.get("benchmark_supervised_weight", 0.0)),
+            rank_only=bool(artifact.get("rank_only", False)),
+            rank_signal_weights=rank_signal_weights,
             metadata=artifact.get("metadata"),
             model_path=model_path,
         )
@@ -114,44 +122,49 @@ class EnsembleDetector:
             return np.zeros(features.shape[0], dtype=np.float64)
         return np.maximum.reduce(signals)
 
-    def _hand_mix_signal(self, chunks: list[list[dict]]) -> np.ndarray:
-        if self.hand_mix_weight <= 0.0 or self.stacked.hand_lgbm is None:
-            return np.zeros(len(chunks), dtype=np.float64)
-        return self.stacked._hand_aggregate_for_chunks(chunks)
-
     def score_chunks(self, chunks: list[list[dict]]) -> list[float]:
         if not chunks:
             return []
         features = np.vstack([chunk_features(chunk, for_training=False) for chunk in chunks])
         stacked_scores = self.stacked.score_features(features)
         hybrid_scores = self._hybrid_supervised(features)
-        fused = np.clip(
-            self.stacked_weight * stacked_scores + self.hybrid_weight * hybrid_scores,
-            0.0,
-            1.0,
-        )
-        if self.iso_weight > 0.0:
-            iso_scores = self._iso_signal(features)
-            fused = np.clip(np.maximum(fused, self.iso_weight * iso_scores), 0.0, 1.0)
-        else:
-            iso_scores = np.zeros(len(chunks), dtype=np.float64)
+        iso_scores = self._iso_signal(features)
         hand_rank = (
             self.stacked._hand_aggregate_for_chunks(chunks)
             if self.stacked.hand_lgbm is not None
             else np.zeros(len(chunks), dtype=np.float64)
         )
-        if len(fused) > 1:
-            fused = apply_batch_ensemble_fusion(
-                fused,
+
+        if self.rank_only:
+            fused = build_rank_only_batch_scores(
                 chunks,
                 iso_scores=iso_scores,
-                hand_scores=hand_rank,
                 stacked_scores=stacked_scores,
                 hybrid_scores=hybrid_scores,
-                hand_mix_weight=self.hand_mix_weight,
-                live_rank_weight=self.live_rank_weight,
-                benchmark_supervised_weight=self.benchmark_supervised_weight,
+                hand_scores=hand_rank,
+                rank_signal_weights=self.rank_signal_weights,
             )
+        else:
+            fused = np.clip(
+                self.stacked_weight * stacked_scores + self.hybrid_weight * hybrid_scores,
+                0.0,
+                1.0,
+            )
+            if self.iso_weight > 0.0:
+                fused = np.clip(np.maximum(fused, self.iso_weight * iso_scores), 0.0, 1.0)
+            if len(fused) > 1:
+                fused = apply_batch_ensemble_fusion(
+                    fused,
+                    chunks,
+                    iso_scores=iso_scores,
+                    hand_scores=hand_rank,
+                    stacked_scores=stacked_scores,
+                    hybrid_scores=hybrid_scores,
+                    hand_mix_weight=self.hand_mix_weight,
+                    live_rank_weight=self.live_rank_weight,
+                    benchmark_supervised_weight=self.benchmark_supervised_weight,
+                )
+
         if len(fused) > 1:
             fused = finalize_batch_scores(
                 fused,
