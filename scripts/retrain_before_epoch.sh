@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Retrain and restart the miner shortly before each competition epoch boundary.
-# Competition epochs start at 12:00 UTC every 132h (see api.poker44.net competition/current).
+# Competition epochs start at 12:00 UTC every 120h/132h (see api.poker44.net).
 set -euo pipefail
 
 REPO_DIR="/root/workspaces/projects/poker44"
@@ -11,9 +11,9 @@ API_URL="${POKER44_COMPETITION_API:-https://api.poker44.net/api/v1/competition/c
 PREP_LEAD_SECONDS="${POKER44_EPOCH_PREP_LEAD_SECONDS:-7200}"
 POST_START_GRACE_SECONDS="${POKER44_EPOCH_PREP_GRACE_SECONDS:-1800}"
 TRAIN_DATES="${POKER44_TRAIN_DATES:-30}"
-HOLDOUT_DATES="${POKER44_HOLDOUT_DATES:-5}"
+HOLDOUT_DATES="${POKER44_HOLDOUT_DATES:-10}"
 
-unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY || true
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy NO_PROXY no_proxy || true
 
 mkdir -p "${REPO_DIR}/data/benchmark"
 # shellcheck disable=SC1091
@@ -60,7 +60,6 @@ except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
 data = payload.get("data") or {}
 epoch = data.get("epoch") or {}
 ends_at_raw = epoch.get("endsAt")
-starts_at_raw = epoch.get("startsAt")
 current_epoch_id = str(epoch.get("epochId") or "")
 
 if not ends_at_raw:
@@ -81,8 +80,6 @@ print(f'NEXT_EPOCH_ID="{next_epoch_id}"')
 print(f'EPOCH_ENDS_AT="{ends_at_raw}"')
 print(f'SECONDS_REMAINING="{int(seconds_remaining)}"')
 print(f'SHOULD_RETRAIN="{should_retrain}"')
-if starts_at_raw:
-    print(f'EPOCH_STARTS_AT="{starts_at_raw}"')
 PY
 )"
 
@@ -100,40 +97,14 @@ fi
 log "Pre-epoch retrain starting for ${NEXT_EPOCH_ID} (current=${CURRENT_EPOCH_ID}, seconds_remaining=${SECONDS_REMAINING})."
 
 python deploy/download_benchmark.py --dates "${TRAIN_DATES}" --refresh
-python deploy/train_stacked.py \
+python deploy/train_hybrid.py \
   --dates "${TRAIN_DATES}" \
   --holdout-dates "${HOLDOUT_DATES}" \
-  --output models/stacked_candidate.joblib
-
-# Promote the candidate only if it does not regress on selection reward.
-# A small tolerance favors recency: fresher training data is worth a tiny
-# validation drop, but a large drop means the retrain went wrong.
-PROMOTED="$(python - <<'PY'
-import json
-from pathlib import Path
-
-tolerance = 0.02
-candidate_meta = Path("models/stacked_candidate.json")
-current_meta = Path("models/stacked.json")
-
-candidate = json.loads(candidate_meta.read_text())["selection_reward"]
-current = (
-    json.loads(current_meta.read_text()).get("selection_reward", 0.0)
-    if current_meta.is_file()
-    else 0.0
-)
-if candidate >= current - tolerance:
-    Path("models/stacked_candidate.joblib").replace("models/stacked.joblib")
-    candidate_meta.replace(current_meta)
-    print(f"promoted candidate={candidate:.4f} current={current:.4f}")
-else:
-    print(f"kept current={current:.4f} candidate={candidate:.4f}")
-PY
-)"
-log "Model promotion: ${PROMOTED}"
-
-bash scripts/poker44-miner validate
-bash scripts/poker44-miner manifest-check
+  --output models/hybrid.joblib \
+  --refresh-cache
+python deploy/tune_hybrid_live.py \
+  --dates "${TRAIN_DATES}" \
+  --holdout-dates "${HOLDOUT_DATES}"
 
 if [ -f "${ENV_FILE}" ] && command -v git >/dev/null 2>&1; then
   repo_commit="$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || true)"
@@ -143,6 +114,6 @@ if [ -f "${ENV_FILE}" ] && command -v git >/dev/null 2>&1; then
   fi
 fi
 
-bash scripts/poker44-miner restart
+pm2 restart "${PM2_NAME:-poker44_miner}" --update-env || pm2 restart poker44_miner --update-env
 write_state "${NEXT_EPOCH_ID}"
 log "Pre-epoch retrain complete for ${NEXT_EPOCH_ID}."
