@@ -38,6 +38,11 @@ class HybridDetector:
         self.hand_boost_weight = float(artifact.get("hand_boost_weight", 0.12))
         self.hand_mix_weight = float(artifact.get("hand_mix_weight", 0.0))
         self.hand_aggregate_mode = str(artifact.get("hand_aggregate_mode", "p90"))
+        self.rank_blend = float(artifact.get("rank_blend", 0.72))
+        self.max_pos_frac = artifact.get("max_pos_frac")
+        if self.max_pos_frac is not None:
+            self.max_pos_frac = float(self.max_pos_frac)
+        self.adaptive_max_pos_frac = bool(artifact.get("adaptive_max_pos_frac", True))
 
     def _supervised_probability(self, features: np.ndarray) -> np.ndarray:
         frame = pd.DataFrame(features, columns=FEATURE_NAMES)
@@ -174,5 +179,13 @@ class HybridDetector:
             scores = self._fuse_scores(supervised, anomaly, hand_boost=hand_boost)
         scores = self._apply_hand_mix(scores, chunks)
         if len(scores) > 1:
-            scores = finalize_batch_scores(scores, chunks)
+            scores = finalize_batch_scores(
+                scores,
+                chunks,
+                hand_boost_weight=self.hand_boost_weight,
+                rank_blend=self.rank_blend,
+                adaptive_rank=True,
+                max_pos_frac=self.max_pos_frac,
+                adaptive_max_pos_frac=self.adaptive_max_pos_frac,
+            )
         return [round(max(0.0, min(1.0, float(score))), 6) for score in scores]

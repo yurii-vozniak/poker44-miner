@@ -24,13 +24,14 @@ from deploy.benchmark_dataset import (
     split_examples_by_date,
     summarize_examples,
 )
+from deploy.inference_postprocess import finalize_batch_scores
 from deploy.batch_calibration import apply_batch_calibration
 from deploy.eval_metrics import evaluate_scores, windowed_reward
 from deploy.features import FEATURE_NAMES, HAND_KEYS, _heuristic_score, hand_features
 from deploy.iso_calibration import fit_iso_calibration, iso_bot_probability
 from poker44.score.scoring import reward
 
-DEFAULT_MODEL_VERSION = "19"
+DEFAULT_MODEL_VERSION = "21"
 SELECTION_WINDOW_SIZE = 200
 MAX_HUMAN_FPR = 0.05
 
@@ -259,7 +260,11 @@ def _passes_human_fpr_guard(
 def _batched_window_reward(
     scores: np.ndarray,
     y_true: np.ndarray,
+    val_examples,
     *,
+    hand_boost_weight: float = 0.12,
+    rank_blend: float | None = 0.72,
+    max_pos_frac: float | None = 0.48,
     batch_size: int = 100,
     n_trials: int = 8,
     seed: int = 42,
@@ -269,6 +274,7 @@ def _batched_window_reward(
     if labels.size < 20 or len(set(labels.tolist())) < 2:
         return None
 
+    chunks = [example.chunk for example in val_examples]
     rng = np.random.default_rng(seed)
     rewards: list[float] = []
     for _ in range(n_trials):
@@ -278,7 +284,15 @@ def _batched_window_reward(
             part = order[start : start + batch_size]
             if part.size < 20:
                 continue
-            batch_scores = apply_batch_calibration(values[part])
+            batch_scores = finalize_batch_scores(
+                values[part],
+                [chunks[index] for index in part],
+                hand_boost_weight=hand_boost_weight,
+                rank_blend=rank_blend,
+                adaptive_rank=True,
+                max_pos_frac=max_pos_frac,
+                adaptive_max_pos_frac=True,
+            )
             _, metrics = reward(batch_scores, labels[part])
             batch_rewards.append(float(metrics["reward"]))
         if batch_rewards:
@@ -290,36 +304,32 @@ def _selection_reward(
     scores: np.ndarray,
     y_true: np.ndarray,
     val_examples,
+    *,
+    hand_boost_weight: float = 0.12,
+    rank_blend: float | None = 0.72,
+    max_pos_frac: float | None = 0.48,
 ) -> float:
-    """Stability-first objective aligned with v2.2 multi-round competition."""
+    """Optimize for validator-style 100-chunk batched scoring."""
     metrics = evaluate_scores(scores, y_true)
     flat_reward = float(metrics.get("reward") or -1.0)
-    window_reward = windowed_reward(
+    batch_reward = _batched_window_reward(
         scores,
         y_true,
-        window_size=SELECTION_WINDOW_SIZE,
-        n_trials=8,
+        val_examples,
+        hand_boost_weight=hand_boost_weight,
+        rank_blend=rank_blend,
+        max_pos_frac=max_pos_frac,
     )
-    if window_reward is None:
-        window_reward = flat_reward
-    batch_reward = _batched_window_reward(scores, y_true)
     if batch_reward is None:
         batch_reward = flat_reward
 
     per_date_rewards = _per_date_rewards(scores, y_true, val_examples)
-    mean_date_reward = flat_reward
-    min_date_reward = flat_reward
-    if per_date_rewards:
-        mean_date_reward = float(np.mean(per_date_rewards))
-        min_date_reward = float(np.min(per_date_rewards))
+    min_date_reward = float(min(per_date_rewards)) if per_date_rewards else flat_reward
 
-    return (
-        0.30 * flat_reward
-        + 0.20 * window_reward
-        + 0.25 * batch_reward
-        + 0.15 * mean_date_reward
-        + 0.10 * min_date_reward
-    )
+    if min_date_reward < 0.55:
+        return min_date_reward - 1.0
+
+    return 0.55 * batch_reward + 0.25 * flat_reward + 0.20 * min_date_reward
 
 
 def _select_fusion(

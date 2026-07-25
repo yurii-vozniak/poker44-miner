@@ -1,7 +1,6 @@
 """Poker44 miner using a hybrid LightGBM + Isolation Forest detector."""
 
 import os
-import time
 from pathlib import Path
 from typing import Tuple
 
@@ -94,10 +93,8 @@ class Miner(BaseMinerNeuron):
 
 
 if __name__ == "__main__":
-    with Miner() as miner:
-        bt.logging.info("Poker44 hybrid miner running...")
-        while True:
-            bt.logging.info(
-                f"Miner UID: {miner.uid} | Incentive: {miner.metagraph.I[miner.uid]}"
-            )
-            time.sleep(5 * 60)
+    miner = Miner()
+    try:
+        miner.run()
+    except KeyboardInterrupt:
+        bt.logging.success("Miner stopped.")
