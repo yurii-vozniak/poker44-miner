@@ -97,14 +97,20 @@ fi
 log "Pre-epoch retrain starting for ${NEXT_EPOCH_ID} (current=${CURRENT_EPOCH_ID}, seconds_remaining=${SECONDS_REMAINING})."
 
 python deploy/download_benchmark.py --dates "${TRAIN_DATES}" --refresh
+python deploy/train_stacked.py \
+  --dates "${TRAIN_DATES}" \
+  --holdout-dates "${HOLDOUT_DATES}" \
+  --output models/stacked.joblib \
+  --refresh-cache
 python deploy/train_hybrid.py \
   --dates "${TRAIN_DATES}" \
   --holdout-dates "${HOLDOUT_DATES}" \
   --output models/hybrid.joblib \
   --refresh-cache
-python deploy/tune_hybrid_live.py \
+python deploy/tune_ensemble.py \
   --dates "${TRAIN_DATES}" \
-  --holdout-dates "${HOLDOUT_DATES}"
+  --holdout-dates "${HOLDOUT_DATES}" \
+  --refresh-cache
 
 if [ -f "${ENV_FILE}" ] && command -v git >/dev/null 2>&1; then
   repo_commit="$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || true)"

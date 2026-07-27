@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tune ensemble fusion weights on date holdout with batched validator scoring."""
+"""Tune coherent rank ensemble for >=0.60 batched holdout stability."""
 
 from __future__ import annotations
 
@@ -30,15 +30,17 @@ from deploy.stability_metrics import (
 from deploy.train_stacked import _batched_window_reward
 from poker44.validator.payload_view import prepare_hand_for_miner
 
-DEFAULT_MODEL_VERSION = "20"
-STABILITY_FLOOR = 0.55
+DEFAULT_MODEL_VERSION = "22"
+STABILITY_FLOOR = 0.60
 
+# iso, stacked, hybrid, hand, heuristic — tuned toward top live miners
 RANK_WEIGHT_PRESETS: tuple[tuple[float, ...], ...] = (
-    (0.32, 0.14, 0.14, 0.18, 0.22),
-    (0.28, 0.12, 0.12, 0.22, 0.26),
-    (0.26, 0.10, 0.10, 0.28, 0.26),
-    (0.34, 0.16, 0.16, 0.16, 0.18),
-    (0.24, 0.12, 0.12, 0.24, 0.28),
+    (0.28, 0.10, 0.10, 0.30, 0.22),
+    (0.30, 0.08, 0.08, 0.28, 0.26),
+    (0.32, 0.10, 0.10, 0.26, 0.22),
+    (0.26, 0.12, 0.12, 0.24, 0.26),
+    (0.34, 0.12, 0.12, 0.22, 0.20),
+    (0.24, 0.08, 0.08, 0.32, 0.28),
 )
 
 
@@ -88,8 +90,8 @@ def main() -> None:
     parser.add_argument("--hybrid-path", type=Path, default=Path("models/hybrid.joblib"))
     parser.add_argument("--output", type=Path, default=Path("models/ensemble.joblib"))
     parser.add_argument("--cache-dir", type=Path, default=Path("data/benchmark"))
-    parser.add_argument("--dates", type=int, default=41)
-    parser.add_argument("--holdout-dates", type=int, default=10)
+    parser.add_argument("--dates", type=int, default=30)
+    parser.add_argument("--holdout-dates", type=int, default=8)
     parser.add_argument("--refresh-cache", action="store_true")
     args = parser.parse_args()
 
@@ -142,9 +144,9 @@ def main() -> None:
             hand_scores=hand_scores,
             rank_signal_weights=rank_weights,
         )
-        for hand_boost_w in (0.12, 0.18, 0.22):
-            for rank_blend in (0.78, 0.85):
-                for max_pos_frac in (0.46, 0.52, 0.56):
+        for hand_boost_w in (0.18, 0.22, 0.26):
+            for rank_blend in (0.85, 0.90, 0.92):
+                for max_pos_frac in (0.46, 0.50, 0.54):
                     selection, per_date = _selection_reward(
                         rank_scores,
                         labels,
@@ -164,15 +166,17 @@ def main() -> None:
                             "max_pos_frac": max_pos_frac,
                             "adaptive_max_pos_frac": True,
                             "stability": stability_summary(per_date),
-                            "meets_floor_0_55": meets_stability_floor(per_date),
+                            "meets_floor_0_60": meets_stability_floor(
+                                per_date, floor=STABILITY_FLOOR
+                            ),
                         }
                         best_per_date = per_date
 
     metadata = {
         "trained_at": datetime.now(timezone.utc).isoformat(),
-        "model_name": "poker44-rank-ensemble",
+        "model_name": "poker44-coherent-rank",
         "model_version": DEFAULT_MODEL_VERSION,
-        "framework": "rank-only-benchmark-supervised",
+        "framework": "coherent-rank-benchmark-supervised",
         "validation_rows": len(val_examples),
         "selection_reward": best["selection_reward"],
         "fusion": {k: v for k, v in best.items() if k != "selection_reward"},

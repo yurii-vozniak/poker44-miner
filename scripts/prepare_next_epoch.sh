@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
-# Retrain and tune for next competition epoch (target: >=0.55 every round).
+# Retrain coherent-rank ensemble for >=0.60 round scores (R2 onward).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy NO_PROXY no_proxy || true
 source miner_env/bin/activate
 export PYTHONPATH=.
 
-echo "==> Download latest benchmark releases"
-python deploy/download_benchmark.py --dates 41 --refresh
+echo "==> Download latest benchmark"
+python deploy/download_benchmark.py --dates 30 --refresh
 
-echo "==> Train hybrid v21 (batched-reward selection)"
-python deploy/train_hybrid.py --dates 41 --holdout-dates 10 --output models/hybrid.joblib --refresh-cache
+echo "==> Train stacked + hybrid v22"
+python deploy/train_stacked.py --dates 30 --holdout-dates 8 --output models/stacked.joblib --refresh-cache
+python deploy/train_hybrid.py --dates 30 --holdout-dates 8 --output models/hybrid.joblib --refresh-cache
 
-echo "==> Tune live batch postprocess"
-python deploy/tune_hybrid_live.py --dates 41 --holdout-dates 10
+echo "==> Tune coherent rank ensemble (floor 0.60)"
+python deploy/tune_ensemble.py --dates 30 --holdout-dates 8 --refresh-cache
 
-echo "==> Copy hybrid to production model path"
-cp -f models/hybrid.joblib models/production.joblib
-
-echo "Done. Restart miner: pm2 restart poker44_miner --update-env"
+echo "Done. Restart: pm2 restart poker44_miner --update-env"

@@ -31,7 +31,7 @@ from deploy.features import FEATURE_NAMES, HAND_KEYS, _heuristic_score, hand_fea
 from deploy.iso_calibration import fit_iso_calibration, iso_bot_probability
 from poker44.score.scoring import reward
 
-DEFAULT_MODEL_VERSION = "21"
+DEFAULT_MODEL_VERSION = "22"
 SELECTION_WINDOW_SIZE = 200
 MAX_HUMAN_FPR = 0.05
 
@@ -326,7 +326,7 @@ def _selection_reward(
     per_date_rewards = _per_date_rewards(scores, y_true, val_examples)
     min_date_reward = float(min(per_date_rewards)) if per_date_rewards else flat_reward
 
-    if min_date_reward < 0.55:
+    if min_date_reward < 0.60:
         return min_date_reward - 1.0
 
     return 0.55 * batch_reward + 0.25 * flat_reward + 0.20 * min_date_reward
