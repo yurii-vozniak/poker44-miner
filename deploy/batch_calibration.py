@@ -18,16 +18,28 @@ def _parse_float(name: str, default: float) -> float:
 
 
 def resolve_max_pos_frac(scores: np.ndarray, base: float | None = None) -> float:
-    """Raise positive fraction when batch scores have weak separation (live OOD)."""
+    """Lower positive fraction when batch scores have weak separation (live OOD).
+
+    The validator reward's human-safety/calibration component is gated on the
+    HARD 0.5-threshold false-positive rate, which is highly sensitive to how
+    many chunks we force above 0.5 relative to the *true* (unknown) bot rate
+    in a live batch. Empirically, flagging a small top slice of the batch
+    (roughly 5-12%) as positive dominates larger fractions (30-55%) across
+    every tested bot-prevalence scenario, because AP and recall@5%FPR are
+    rank-based and unaffected by how many cross 0.5, while hard FPR explodes
+    once max_pos_frac exceeds the true bot rate. When score separation is
+    weak (batch is ambiguous / out-of-distribution), we should be even more
+    conservative about how many chunks we mark positive, not less.
+    """
     if base is None:
-        base = _parse_float("POKER44_BATCH_MAX_POS_FRAC", 0.42)
+        base = _parse_float("POKER44_BATCH_MAX_POS_FRAC", 0.08)
     if scores.size <= 1:
         return base
     std = float(np.std(scores))
     if std < 0.04:
-        return min(0.55, base + 0.20)
+        return max(0.02, base * 0.5)
     if std < 0.08:
-        return min(0.52, base + 0.14)
+        return max(0.03, base * 0.75)
     return base
 
 
@@ -50,7 +62,7 @@ def apply_batch_calibration(
     zero on mixed batches.
     """
     if max_pos_frac is None:
-        max_pos_frac = _parse_float("POKER44_BATCH_MAX_POS_FRAC", 0.42)
+        max_pos_frac = _parse_float("POKER44_BATCH_MAX_POS_FRAC", 0.08)
     if high_band is None:
         high_band = (
             _parse_float("POKER44_BATCH_HIGH_LO", 0.55),

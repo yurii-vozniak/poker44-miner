@@ -132,6 +132,73 @@ def per_date_batched_rewards(
     return rewards
 
 
+def imbalance_robustness_rewards(
+    scores: np.ndarray,
+    y_true: np.ndarray,
+    val_examples,
+    *,
+    hand_boost_weight: float = 0.0,
+    rank_blend: float | None = None,
+    adaptive_rank: bool = True,
+    max_pos_frac: float | None = None,
+    adaptive_max_pos_frac: bool = True,
+    batch_size: int = 100,
+    bot_fracs: tuple[float, ...] = (0.05, 0.10, 0.20, 0.35, 0.50),
+    seed: int = 42,
+) -> dict[float, float]:
+    """Simulate validator batches at several *assumed* live bot prevalences.
+
+    The public benchmark releases are artificially balanced 50/50 bot/human,
+    but real validator batches likely have a very different (unknown) bot
+    rate. A config that only looks good on 50/50 batches can catastrophically
+    over-flag humans (hard FPR) once the true rate is much lower. This
+    resamples the held-out pool at several assumed bot rates and reports the
+    reward at each, so tuning can select settings that are robust across the
+    plausible range instead of overfitting to the benchmark's own balance.
+    """
+    labels = np.asarray(y_true, dtype=int)
+    values = np.asarray(scores, dtype=float)
+    chunks = [example.chunk for example in val_examples]
+    pos_idx = np.flatnonzero(labels == 1)
+    neg_idx = np.flatnonzero(labels == 0)
+    if pos_idx.size == 0 or neg_idx.size == 0:
+        return {}
+
+    rng = np.random.default_rng(seed)
+    results: dict[float, list[float]] = {frac: [] for frac in bot_fracs}
+    n_batches = max(1, (labels.size // batch_size))
+
+    for bot_frac in bot_fracs:
+        n_pos = max(1, int(round(batch_size * bot_frac)))
+        n_pos = min(n_pos, pos_idx.size)
+        n_neg = min(batch_size - n_pos, neg_idx.size)
+        if n_pos <= 0 or n_neg <= 0:
+            continue
+        for _ in range(n_batches):
+            pos_pick = rng.choice(pos_idx, size=n_pos, replace=pos_idx.size < n_pos)
+            neg_pick = rng.choice(neg_idx, size=n_neg, replace=neg_idx.size < n_neg)
+            idx = np.concatenate([pos_pick, neg_pick])
+            rng.shuffle(idx)
+            batch_chunks = [chunks[i] for i in idx]
+            batch_scores = finalize_batch_scores(
+                values[idx],
+                batch_chunks,
+                hand_boost_weight=hand_boost_weight,
+                rank_blend=rank_blend,
+                adaptive_rank=adaptive_rank,
+                max_pos_frac=max_pos_frac,
+                adaptive_max_pos_frac=adaptive_max_pos_frac,
+            )
+            _, metrics = reward(batch_scores, labels[idx])
+            results[bot_frac].append(float(metrics["reward"]))
+
+    return {
+        frac: float(np.mean(values_))
+        for frac, values_ in results.items()
+        if values_
+    }
+
+
 def stability_summary(per_date_rewards: dict[str, float]) -> dict[str, float | None]:
     if not per_date_rewards:
         return {

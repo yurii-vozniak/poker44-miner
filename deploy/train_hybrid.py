@@ -31,7 +31,7 @@ from deploy.features import FEATURE_NAMES, HAND_KEYS, _heuristic_score, hand_fea
 from deploy.iso_calibration import fit_iso_calibration, iso_bot_probability
 from poker44.score.scoring import reward
 
-DEFAULT_MODEL_VERSION = "22"
+DEFAULT_MODEL_VERSION = "23"
 SELECTION_WINDOW_SIZE = 200
 MAX_HUMAN_FPR = 0.05
 
@@ -264,7 +264,7 @@ def _batched_window_reward(
     *,
     hand_boost_weight: float = 0.12,
     rank_blend: float | None = 0.72,
-    max_pos_frac: float | None = 0.48,
+    max_pos_frac: float | None = 0.08,
     batch_size: int = 100,
     n_trials: int = 8,
     seed: int = 42,
@@ -291,7 +291,7 @@ def _batched_window_reward(
                 rank_blend=rank_blend,
                 adaptive_rank=True,
                 max_pos_frac=max_pos_frac,
-                adaptive_max_pos_frac=True,
+                adaptive_max_pos_frac=False,
             )
             _, metrics = reward(batch_scores, labels[part])
             batch_rewards.append(float(metrics["reward"]))
@@ -307,7 +307,7 @@ def _selection_reward(
     *,
     hand_boost_weight: float = 0.12,
     rank_blend: float | None = 0.72,
-    max_pos_frac: float | None = 0.48,
+    max_pos_frac: float | None = 0.08,
 ) -> float:
     """Optimize for validator-style 100-chunk batched scoring."""
     metrics = evaluate_scores(scores, y_true)
