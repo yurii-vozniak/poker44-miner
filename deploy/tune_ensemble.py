@@ -31,7 +31,7 @@ from deploy.stability_metrics import (
 from deploy.train_stacked import _batched_window_reward
 from poker44.validator.payload_view import prepare_hand_for_miner
 
-DEFAULT_MODEL_VERSION = "23"
+DEFAULT_MODEL_VERSION = "24"
 STABILITY_FLOOR = 0.60
 
 # iso, stacked, hybrid, hand, heuristic — tuned toward top live miners
@@ -154,7 +154,7 @@ def main() -> None:
         )
         for hand_boost_w in (0.18, 0.22, 0.26):
             for rank_blend in (0.85, 0.90, 0.92):
-                for max_pos_frac in (0.05, 0.08, 0.10, 0.12, 0.15):
+                for max_pos_frac in (0.03, 0.04, 0.05, 0.06, 0.08, 0.10, 0.12, 0.15):
                     selection, per_date = _selection_reward(
                         rank_scores,
                         labels,

@@ -162,17 +162,52 @@ class BaseNeuron(ABC):
             bt.logging.error("If you use public RPC endpoint try to move to local node")
             time.sleep(5)
 
-    def check_registered(self):
-        # --- Check for registration.
-        if not self.subtensor.is_hotkey_registered(
-            netuid=self.config.netuid,
-            hotkey_ss58=self.wallet.hotkey.ss58_address,
-        ):
-            bt.logging.error(
-                f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}."
-                f" Please register the hotkey using `btcli subnets register` before trying again"
-            )
-            exit()
+    def check_registered(self, retries: int = 4, retry_delay_seconds: float = 5.0):
+        """Check registration, retrying transient RPC failures before exiting.
+
+        A single `is_hotkey_registered` call against a public RPC endpoint can
+        spuriously report False (or raise) during a websocket hiccup even
+        though the hotkey remains registered on-chain. Exiting immediately on
+        the first such blip forces a full process restart -- reconnecting
+        subtensor, reloading the model and re-serving the axon -- during which
+        any validator request that arrives is simply missed. Only exit once
+        several consecutive checks agree the hotkey is genuinely
+        unregistered.
+        """
+        for attempt in range(1, retries + 1):
+            try:
+                registered = self.subtensor.is_hotkey_registered(
+                    netuid=self.config.netuid,
+                    hotkey_ss58=self.wallet.hotkey.ss58_address,
+                )
+            except Exception as exc:
+                registered = False
+                bt.logging.warning(
+                    f"Registration check attempt {attempt}/{retries} raised "
+                    f"{exc!r}; treating as a transient RPC issue and retrying."
+                )
+
+            if registered:
+                return
+
+            if attempt < retries:
+                bt.logging.warning(
+                    f"Registration check attempt {attempt}/{retries} reported "
+                    "not registered; retrying before treating this as final "
+                    "(likely a transient public-RPC hiccup)."
+                )
+                time.sleep(retry_delay_seconds)
+                try:
+                    self.subtensor = bt.Subtensor(config=self.config)
+                    self.metagraph = self.subtensor.metagraph(self.config.netuid)
+                except Exception as exc:
+                    bt.logging.warning(f"Retry reconnect failed: {exc!r}")
+
+        bt.logging.error(
+            f"Wallet: {self.wallet} is not registered on netuid {self.config.netuid}."
+            f" Please register the hotkey using `btcli subnets register` before trying again"
+        )
+        exit()
 
     def should_sync_metagraph(self):
         """

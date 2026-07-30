@@ -19,6 +19,7 @@ import time
 import asyncio
 import threading
 import argparse
+import os
 import traceback
 
 import bittensor as bt
@@ -30,6 +31,10 @@ except Exception:  # pragma: no cover - SDK compatibility shim
 
 from poker44.base.neuron import BaseNeuron
 from poker44.utils.config import add_miner_args
+from poker44.utils.encrypted_endpoints import (
+    EndpointProtectionError,
+    enable_miner_endpoint_protection,
+)
 from poker44.validator.synapse import DetectionSynapse
 
 from typing import Union
@@ -180,6 +185,29 @@ class BaseMinerNeuron(BaseNeuron):
 
         # Check that miner is registered on the network.
         self.sync()
+
+        try:
+            endpoint_protected = enable_miner_endpoint_protection(self)
+        except EndpointProtectionError as exc:
+            endpoint_protected = False
+            bt.logging.error(
+                "Encrypted Axon endpoint was not enabled; continuing with the "
+                f"public endpoint to preserve validator connectivity: {exc}"
+            )
+        if endpoint_protected:
+            bt.logging.success(
+                "Encrypted Axon endpoint published; serving a masked metagraph endpoint."
+            )
+        elif os.getenv("POKER44_ENCRYPTED_AXON_ENABLED", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            bt.logging.warning(
+                "Encrypted Axon endpoint publication was not confirmed; continuing "
+                "with the public endpoint."
+            )
 
         # Serve passes the axon information to the network + netuid we are hosting on.
         # This will auto-update if the axon port of external ip have changed.

@@ -20,6 +20,10 @@ AGG_ACTIONS = frozenset({"bet", "raise"})
 PASSIVE_ACTIONS = frozenset({"call", "check"})
 VISIBLE_BB = 0.02
 COMMON_POT_FRACS = (0.5, 0.66, 0.75, 1.0)
+# Finer bet-size lattice: bots frequently size off a small set of exact pot-fraction
+# multipliers, while humans size more continuously around them. Used to measure how
+# tightly a chunk's bet sizing snaps to a mechanical grid.
+FINE_POT_LATTICE = (0.25, 0.33, 0.5, 0.66, 0.75, 1.0, 1.25, 1.5, 2.0, 2.5, 3.0)
 
 HAND_KEYS = [
     "h_n_actions",
@@ -46,6 +50,8 @@ HAND_KEYS = [
     "h_reached_turn",
     "h_reached_river",
     "h_heuristic",
+    "h_trigram_uniq",
+    "h_lattice_resid",
 ]
 
 AGG_SUFFIXES = ("mean", "std", "q25", "q75", "max")
@@ -66,6 +72,12 @@ FEATURE_NAMES = [
     "c_potfrac_near_100",
     "c_bigram_ent",
     "c_bigram_uniq",
+    "c_trigram_ent",
+    "c_trigram_uniq",
+    "c_markov_self_perplexity",
+    "c_markov_row_entropy",
+    "c_lattice_resid_mean",
+    "c_lattice_adherence_tight",
     "c_hand_heuristic_std",
     "c_hand_heuristic_max",
     "c_hand_heuristic_p75",
@@ -135,7 +147,15 @@ def _hand_feature_dict(hand: dict) -> dict[str, float]:
 
     types = [a.get("action_type") or "" for a in actions]
     bigrams = list(zip(types[:-1], types[1:]))
+    trigrams = list(zip(types[:-2], types[1:-1], types[2:]))
     actors = {a.get("actor_seat") for a in actions if a.get("actor_seat")}
+
+    lattice_resid = 0.0
+    if pot_fracs:
+        residuals = [
+            min(abs(value - target) for target in FINE_POT_LATTICE) for value in pot_fracs
+        ]
+        lattice_resid = float(np.mean(residuals))
 
     streets_set = {s.get("street") for s in streets if isinstance(s, dict)}
     hero_seat = int(metadata.get("hero_seat") or 0)
@@ -182,6 +202,8 @@ def _hand_feature_dict(hand: dict) -> dict[str, float]:
         "h_reached_turn": 1.0 if "turn" in streets_set else 0.0,
         "h_reached_river": 1.0 if "river" in streets_set else 0.0,
         "h_heuristic": _heuristic_score(hand),
+        "h_trigram_uniq": float(len(set(trigrams))),
+        "h_lattice_resid": lattice_resid,
     }
 
 
@@ -190,6 +212,9 @@ def _chunk_consistency_features(chunk: list[dict]) -> dict[str, float]:
     pot_fracs: list[float] = []
     bet_sizes_bb: list[float] = []
     bigram_counter: Counter = Counter()
+    trigram_counter: Counter = Counter()
+    transition_counter: Counter = Counter()
+    state_counter: Counter = Counter()
     heuristic_scores: list[float] = []
 
     for hand in chunk:
@@ -197,6 +222,10 @@ def _chunk_consistency_features(chunk: list[dict]) -> dict[str, float]:
         types = [a.get("action_type") or "" for a in hand.get("actions") or []]
         for bigram in zip(types[:-1], types[1:]):
             bigram_counter[bigram] += 1
+            transition_counter[bigram] += 1
+            state_counter[bigram[0]] += 1
+        for trigram in zip(types[:-2], types[1:-1], types[2:]):
+            trigram_counter[trigram] += 1
         for action in hand.get("actions") or []:
             street = str(action.get("street") or "")
             seat = int(action.get("actor_seat") or 0)
@@ -226,6 +255,46 @@ def _chunk_consistency_features(chunk: list[dict]) -> dict[str, float]:
     else:
         bigram_ent = 0.0
 
+    if trigram_counter:
+        counts = np.asarray(list(trigram_counter.values()), dtype=np.float64)
+        probs = counts / counts.sum()
+        trigram_ent = float(-np.sum(probs * np.log(probs + 1e-12)))
+    else:
+        trigram_ent = 0.0
+
+    # Order-1 Markov self-perplexity: fit a transition matrix on the chunk's own
+    # action-type sequences, then measure how surprising each observed transition is
+    # under that same fitted model. A highly mechanical/scripted policy re-plays a
+    # small number of state transitions very consistently, so its own next action is
+    # easy to predict from the current state (low self-perplexity, low row entropy).
+    # Human play is comparatively harder to predict from action-type history alone
+    # because it is driven by hidden information (hand strength, read on opponent).
+    if transition_counter and state_counter:
+        row_totals: Counter = Counter()
+        for (src, _dst), count in transition_counter.items():
+            row_totals[src] += count
+        neg_log_likelihoods: list[float] = []
+        row_entropies: list[float] = []
+        row_weights: list[float] = []
+        for src in row_totals:
+            dst_counts = {
+                dst: count for (s, dst), count in transition_counter.items() if s == src
+            }
+            total = row_totals[src]
+            row_probs = np.asarray(list(dst_counts.values()), dtype=np.float64) / total
+            row_entropies.append(float(-np.sum(row_probs * np.log(row_probs + 1e-12))))
+            row_weights.append(float(total))
+            for dst, count in dst_counts.items():
+                prob = count / total
+                neg_log_likelihoods.extend([-np.log(prob + 1e-12)] * count)
+        markov_self_perplexity = float(np.mean(neg_log_likelihoods)) if neg_log_likelihoods else 0.0
+        markov_row_entropy = (
+            float(np.average(row_entropies, weights=row_weights)) if row_weights else 0.0
+        )
+    else:
+        markov_self_perplexity = 0.0
+        markov_row_entropy = 0.0
+
     feats: dict[str, float] = {
         "c_n_hands": float(len(chunk)),
         "c_decision_ent_mean": float(np.mean(entropies)) if entropies else 0.0,
@@ -233,6 +302,10 @@ def _chunk_consistency_features(chunk: list[dict]) -> dict[str, float]:
         "c_decision_buckets": float(len(decisions)),
         "c_bigram_ent": bigram_ent,
         "c_bigram_uniq": float(len(bigram_counter)),
+        "c_trigram_ent": trigram_ent,
+        "c_trigram_uniq": float(len(trigram_counter)),
+        "c_markov_self_perplexity": markov_self_perplexity,
+        "c_markov_row_entropy": markov_row_entropy,
         "c_hand_heuristic_std": float(np.std(heuristic_scores)) if heuristic_scores else 0.0,
         "c_hand_heuristic_max": float(np.max(heuristic_scores)) if heuristic_scores else 0.0,
         "c_hand_heuristic_p75": float(np.percentile(heuristic_scores, 75)) if heuristic_scores else 0.0,
@@ -256,11 +329,19 @@ def _chunk_consistency_features(chunk: list[dict]) -> dict[str, float]:
         for target in COMMON_POT_FRACS:
             key = f"c_potfrac_near_{int(target * 100):03d}"
             feats[key] = float(np.mean([abs(value - target) < 0.07 for value in pot_arr]))
+        lattice_residuals = np.asarray(
+            [min(abs(value - target) for target in FINE_POT_LATTICE) for value in pot_arr],
+            dtype=np.float64,
+        )
+        feats["c_lattice_resid_mean"] = float(np.mean(lattice_residuals))
+        feats["c_lattice_adherence_tight"] = float(np.mean(lattice_residuals < 0.03))
     else:
         feats["c_potfrac_cv"] = 0.0
         feats["c_potfrac_snap_uniq"] = 0.0
         for target in COMMON_POT_FRACS:
             feats[f"c_potfrac_near_{int(target * 100):03d}"] = 0.0
+        feats["c_lattice_resid_mean"] = 0.0
+        feats["c_lattice_adherence_tight"] = 0.0
 
     return feats
 
