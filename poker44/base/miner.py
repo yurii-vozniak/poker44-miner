@@ -1,5 +1,5 @@
 # The MIT License (MIT)
-# Copyright © 2023 Yuma Rao
+# Copyright (c) 2025 apaor
 
 # Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated
 # documentation files (the “Software”), to deal in the Software without restriction, including without limitation
@@ -23,11 +23,14 @@ import os
 import traceback
 
 import bittensor as bt
+
 try:
     from bittensor.core.errors import NotVerifiedException
 except Exception:  # pragma: no cover - SDK compatibility shim
+
     class NotVerifiedException(Exception):
         pass
+
 
 from poker44.base.neuron import BaseNeuron
 from poker44.utils.config import add_miner_args
@@ -35,7 +38,7 @@ from poker44.utils.encrypted_endpoints import (
     EndpointProtectionError,
     enable_miner_endpoint_protection,
 )
-from poker44.validator.synapse import DetectionSynapse
+from poker44.protocol import MicroSessionDetectionSynapse
 
 from typing import Union
 
@@ -68,12 +71,12 @@ class BaseMinerNeuron(BaseNeuron):
         # Attach determiners which functions are called when servicing a request.
         bt.logging.info("Attaching forward function to miner axon.")
         self.axon.attach(
-            forward_fn = self.forward,
-            blacklist_fn = self.blacklist,
-            priority_fn = self.priority,
+            forward_fn=self.forward_micro_sessions,
+            blacklist_fn=self.blacklist_micro_sessions,
+            priority_fn=self.priority_micro_sessions,
         )
         if self.validator_hotkey_whitelist:
-            self.axon.verify_fns[DetectionSynapse.__name__] = self.verify_validator_request
+            self.axon.verify_fns[MicroSessionDetectionSynapse.__name__] = self.verify_validator_request
         # # self.axon.attach(
         #     forward_fn=self.forward_feedback,
         #     blacklist_fn=self.blacklist_feedback,
@@ -94,10 +97,14 @@ class BaseMinerNeuron(BaseNeuron):
 
     @property
     def validator_hotkey_whitelist(self) -> set[str]:
-        configured = getattr(self.config.blacklist, "allowed_validator_hotkeys", []) or []
+        configured = (
+            getattr(self.config.blacklist, "allowed_validator_hotkeys", []) or []
+        )
         return {str(hotkey).strip() for hotkey in configured if str(hotkey).strip()}
 
-    async def verify_validator_request(self, synapse: DetectionSynapse) -> None:
+    async def verify_validator_request(
+        self, synapse: MicroSessionDetectionSynapse
+    ) -> None:
         """Require signed requests from explicitly allowed validator hotkeys."""
         if synapse.dendrite is None:
             raise NotVerifiedException("Missing dendrite terminal in request")
@@ -116,7 +123,9 @@ class BaseMinerNeuron(BaseNeuron):
 
         await default_verify(synapse)
 
-    def common_blacklist(self, synapse: DetectionSynapse):
+    def common_blacklist(
+        self, synapse: MicroSessionDetectionSynapse
+    ):
         """Shared miner admission policy with optional validator allowlist."""
         if synapse.dendrite is None or synapse.dendrite.hotkey is None:
             bt.logging.warning("Received a request without a dendrite or hotkey.")
@@ -139,14 +148,21 @@ class BaseMinerNeuron(BaseNeuron):
             return False, "Non-registered hotkey allowed"
 
         uid = self.metagraph.hotkeys.index(hotkey)
-        if self.config.blacklist.force_validator_permit and not self.metagraph.validator_permit[uid]:
-            bt.logging.warning(f"Blacklisting a request from non-validator hotkey {hotkey}")
+        if (
+            self.config.blacklist.force_validator_permit
+            and not self.metagraph.validator_permit[uid]
+        ):
+            bt.logging.warning(
+                f"Blacklisting a request from non-validator hotkey {hotkey}"
+            )
             return True, "Non-validator hotkey"
 
         bt.logging.trace(f"Not blacklisting recognized hotkey {hotkey}")
         return False, "Hotkey recognized"
 
-    def caller_priority(self, synapse: DetectionSynapse) -> float:
+    def caller_priority(
+        self, synapse: MicroSessionDetectionSynapse
+    ) -> float:
         if synapse.dendrite is None or synapse.dendrite.hotkey is None:
             bt.logging.warning("Received a request without a dendrite or hotkey.")
             return 0.0
@@ -183,8 +199,11 @@ class BaseMinerNeuron(BaseNeuron):
             Exception: For unforeseen errors during the miner's operation, which are logged for diagnosis.
         """
 
-        # Check that miner is registered on the network.
-        self.sync()
+        # BaseNeuron already loaded a fresh metagraph and verified registration.
+        # Avoid an immediate second RPC sync before the axon can start serving.
+        self.check_registered()
+        self.last_update = self.block
+        self.save_state()
 
         try:
             endpoint_protected = enable_miner_endpoint_protection(self)
@@ -246,7 +265,7 @@ class BaseMinerNeuron(BaseNeuron):
             exit()
 
         # In case of unforeseen errors, the miner will log the error and continue operations.
-        except Exception as e:
+        except Exception:
             bt.logging.error(traceback.format_exc())
 
     def run_in_background_thread(self):
