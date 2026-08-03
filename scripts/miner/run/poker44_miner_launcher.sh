@@ -11,9 +11,9 @@ fi
 source miner_env/bin/activate
 export PYTHONPATH="/root/workspaces/projects/poker44"
 export BT_NO_PARSE_CLI_ARGS=0
-export POKER44_MODEL_FACTORY="${POKER44_MODEL_FACTORY:-deploy.micro_session_model:create_model}"
-export POKER44_MODEL_PATH="${POKER44_MODEL_PATH:-./models/micro_session_v1.joblib}"
-export POKER44_MODEL_VERSION="${POKER44_MODEL_VERSION:-micro-v1}"
+export POKER44_MODEL_FACTORY="${POKER44_MODEL_FACTORY:-poker44.miner.model:create_reference_model}"
+export POKER44_MODEL_VERSION="${POKER44_MODEL_VERSION:-reference-v2}"
+export POKER44_MODEL_PATH="${POKER44_MODEL_PATH:-}"
 exec python "./neurons/miner.py" \
   --netuid 126 \
   --wallet.name yaroslav-coldkey \
